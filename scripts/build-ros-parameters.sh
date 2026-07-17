@@ -6,7 +6,7 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 
-required=(ENVIRONMENT_NAME ZONE_ID_A ZONE_ID_B EXISTING_VPC_ID EXISTING_VPC_CIDR VSWITCH_ID_A VSWITCH_ID_B ECS_IMAGE_ID GATEWAY_IMAGE CONTROL_IMAGE DB_PASSWORD RUNTIME_SECRET_DATA)
+required=(ENVIRONMENT_NAME ZONE_ID_A ZONE_ID_B EXISTING_VPC_ID EXISTING_VPC_CIDR VSWITCH_ID_A VSWITCH_ID_B ECS_IMAGE_ID GATEWAY_IMAGE CONTROL_IMAGE GHCR_USERNAME GHCR_TOKEN DB_PASSWORD RUNTIME_SECRET_DATA)
 for name in "${required[@]}"; do
   [ -n "${!name:-}" ] || { echo "$name is required" >&2; exit 1; }
 done
@@ -19,11 +19,15 @@ printf '%s' "$RUNTIME_SECRET_DATA" | jq -e '
   (.publicProxyHost | type == "string" and length > 0)
 ' >/dev/null || { echo "RUNTIME_SECRET_DATA is incomplete or invalid" >&2; exit 1; }
 [ "${#DB_PASSWORD}" -ge 16 ] || { echo "DB_PASSWORD must contain at least 16 characters" >&2; exit 1; }
+[ "${#GHCR_USERNAME}" -ge 1 ] || { echo "GHCR_USERNAME is required" >&2; exit 1; }
+[ "${#GHCR_TOKEN}" -ge 20 ] || { echo "GHCR_TOKEN does not look like a GitHub token" >&2; exit 1; }
+case "$GHCR_TOKEN" in *$'\n'*) echo "GHCR_TOKEN must not contain a newline" >&2; exit 1;; esac
 
 gateway_user_data="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE")"
 control_user_data="$(scripts/render-control-cloud-init.sh "$CONTROL_IMAGE")"
 gateway_runtime="$(printf '%s' "$RUNTIME_SECRET_DATA" | jq -c '{encryptionKey,canaryDeviceId,controlTLSServerName,controlServerCA,gatewayClientCert,gatewayClientKey}')"
 control_runtime="$(printf '%s' "$RUNTIME_SECRET_DATA" | jq -c '{encryptionKey,adminToken,publicProxyHost,controlServerCert,controlServerKey,gatewayClientCA}')"
+registry_secret="$(jq -nc --arg username "$GHCR_USERNAME" --arg token "$GHCR_TOKEN" '{username:$username,token:$token}')"
 umask 077
 jq -n \
   --arg environment "$ENVIRONMENT_NAME" \
@@ -35,6 +39,7 @@ jq -n \
   --arg gatewayUserData "$gateway_user_data" --arg controlUserData "$control_user_data" \
   --arg sourceCidr "${DEVICE_SOURCE_CIDR:-0.0.0.0/0}" --arg dbPassword "$DB_PASSWORD" \
   --arg gatewayRuntime "$gateway_runtime" --arg controlRuntime "$control_runtime" \
+  --arg registrySecret "$registry_secret" \
   --arg desired "${GATEWAY_DESIRED_CAPACITY:-4}" \
   '[
     {ParameterKey:"EnvironmentName",ParameterValue:$environment},
@@ -55,7 +60,8 @@ jq -n \
     {ParameterKey:"RequireCanary",ParameterValue:"false"},
     {ParameterKey:"DBPassword",ParameterValue:$dbPassword},
     {ParameterKey:"GatewayRuntimeSecretData",ParameterValue:$gatewayRuntime},
-    {ParameterKey:"ControlRuntimeSecretData",ParameterValue:$controlRuntime}
+    {ParameterKey:"ControlRuntimeSecretData",ParameterValue:$controlRuntime},
+    {ParameterKey:"RegistrySecretData",ParameterValue:$registrySecret}
   ]' > "$1"
 chmod 600 "$1"
 echo "wrote protected ROS parameters to $1"

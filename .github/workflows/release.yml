@@ -6,12 +6,12 @@ on:
 permissions:
   contents: read
   id-token: write
+  packages: write
 concurrency:
   group: proxymesh-release
   cancel-in-progress: false
 env:
   REGION: cn-hongkong
-  ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,44 +20,30 @@ jobs:
       control_image: ${{ steps.images.outputs.control }}
     steps:
       - uses: actions/checkout@v4
-      - uses: aliyun/configure-aliyun-credentials-action@v1
-        with:
-          role-to-assume: ${{ vars.ALIBABA_CLOUD_RELEASE_ROLE_ARN }}
-          oidc-provider-arn: ${{ vars.ALIBABA_CLOUD_OIDC_PROVIDER_ARN }}
-          audience: github-actions
-          role-session-name: proxymesh-${{ github.run_id }}
-      - uses: aliyun/setup-aliyun-cli-action@v1
-      - name: Obtain short-lived ACR login
-        id: acr
-        shell: bash
-        run: |
-          auth="$(aliyun cr GetAuthorizationToken --RegionId "$REGION")"
-          username="$(jq -r '.TempUsername' <<<"$auth")"
-          password="$(jq -r '.AuthorizationToken' <<<"$auth")"
-          echo "::add-mask::$password"
-          echo "username=$username" >> "$GITHUB_OUTPUT"
-          echo "password=$password" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
-          registry: ${{ env.ACR_REGISTRY }}
-          username: ${{ steps.acr.outputs.username }}
-          password: ${{ steps.acr.outputs.password }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
       - name: Build and push immutable images
         id: images
         shell: bash
         run: |
-          gateway="$ACR_REGISTRY/proxymesh/gateway:${GITHUB_SHA}"
-          control="$ACR_REGISTRY/proxymesh/control-plane:${GITHUB_SHA}"
-          docker buildx build --platform linux/amd64 -f Dockerfile.gateway --push -t "$gateway" .
-          docker buildx build --platform linux/amd64 -f Dockerfile.control-plane --push -t "$control" .
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          gateway="ghcr.io/$owner/proxy-mesh-gateway:${GITHUB_SHA}"
+          control="ghcr.io/$owner/proxy-mesh-control-plane:${GITHUB_SHA}"
+          source="https://github.com/$GITHUB_REPOSITORY"
+          docker buildx build --platform linux/amd64 -f Dockerfile.gateway --label "org.opencontainers.image.source=$source" --push -t "$gateway" .
+          docker buildx build --platform linux/amd64 -f Dockerfile.control-plane --label "org.opencontainers.image.source=$source" --push -t "$control" .
           gateway_digest="$(docker buildx imagetools inspect "$gateway" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           control_digest="$(docker buildx imagetools inspect "$control" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          echo "gateway=$ACR_REGISTRY/proxymesh/gateway@$gateway_digest" >> "$GITHUB_OUTPUT"
-          echo "control=$ACR_REGISTRY/proxymesh/control-plane@$control_digest" >> "$GITHUB_OUTPUT"
+          echo "gateway=ghcr.io/$owner/proxy-mesh-gateway@$gateway_digest" >> "$GITHUB_OUTPUT"
+          echo "control=ghcr.io/$owner/proxy-mesh-control-plane@$control_digest" >> "$GITHUB_OUTPUT"
 
   staging:
     needs: build
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     environment: staging
     steps:

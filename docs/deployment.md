@@ -1,6 +1,7 @@
 # Alibaba Cloud deployment
 
-1. Build both images and push immutable Git-SHA tags to ACR.
+1. Build both images and push immutable Git-SHA tags and digests to private GHCR
+   packages under `ghcr.io/gemini-nx`.
 2. Reserve a device ingress range (default `50000..59999`). NLB uses TCP
    multi-port listening and forwards each frontend port to the identical backend
    port; it does not terminate Shadowsocks encryption.
@@ -28,7 +29,7 @@ For fast capacity changes, dispatch `scale.yml` with the desired value. It creat
 
 ## GitHub environment configuration
 
-Create Alibaba RAM OIDC trust for `https://token.actions.githubusercontent.com`, restrict the audience and repository/environment subject, then grant the release role only ACR push, ROS change-set/stack update, and the required ESS read/modify/remove actions. Configure `ALIBABA_CLOUD_OIDC_PROVIDER_ARN`, `ALIBABA_CLOUD_RELEASE_ROLE_ARN`, `ACR_REGISTRY`, `ROS_STACK_NAME`, and `GATEWAY_SCALING_GROUP_ID` as environment variables. Configure required reviewers on the `production` GitHub Environment.
+Create Alibaba RAM OIDC trust for `https://token.actions.githubusercontent.com`, restrict the audience and repository/environment subject, then grant the release role only ROS change-set/stack update and the required ESS read/modify/remove actions. Configure `ALIBABA_CLOUD_OIDC_PROVIDER_ARN`, `ALIBABA_CLOUD_RELEASE_ROLE_ARN`, `ROS_STACK_NAME`, and `GATEWAY_SCALING_GROUP_ID` as environment variables. Configure required reviewers on the `production` GitHub Environment. GitHub Actions publishes GHCR images with the repository-scoped `GITHUB_TOKEN`; Alibaba credentials are not used by the image build job.
 
 The phase-one Control Plane is intentionally a single active ECS instance because
 Gateway sessions and two-phase ACK state are held in memory. Gateways continue

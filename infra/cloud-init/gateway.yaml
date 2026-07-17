@@ -11,6 +11,7 @@ write_files:
       IMAGE=__GATEWAY_IMAGE__
       CONTROL_GRPC_ADDR=__CONTROL_GRPC_ADDR__
       KMS_SECRET_NAME=__KMS_SECRET_NAME__
+      REGISTRY_SECRET_NAME=__REGISTRY_SECRET_NAME__
       RAM_ROLE_NAME=__GATEWAY_RAM_ROLE_NAME__
       REQUIRE_CANARY=__REQUIRE_CANARY__
   - path: /opt/proxymesh/bin/start-gateway.sh
@@ -24,6 +25,7 @@ write_files:
       install -d -m 0700 /run/proxymesh
       install -d -o 65532 -g 65532 -m 0700 /var/lib/proxymesh
       SECRET_DATA="$(aliyun kms GetSecretValue --SecretName "$KMS_SECRET_NAME" | jq -r '.SecretData')"
+      REGISTRY_DATA="$(aliyun kms GetSecretValue --SecretName "$REGISTRY_SECRET_NAME" | jq -r '.SecretData')"
       umask 077
       printf '%s' "$SECRET_DATA" | jq -r '
         "ENCRYPTION_KEY=" + .encryptionKey,
@@ -46,13 +48,13 @@ write_files:
           >> /run/proxymesh/gateway.env
       fi
       unset SECRET_DATA
-      acr="$(aliyun cr GetAuthorizationToken --RegionId cn-hongkong)"
-      acr_user="$(printf '%s' "$acr" | jq -r '.TempUsername')"
-      acr_password="$(printf '%s' "$acr" | jq -r '.AuthorizationToken')"
+      registry_user="$(printf '%s' "$REGISTRY_DATA" | jq -r '.username')"
+      registry_token="$(printf '%s' "$REGISTRY_DATA" | jq -r '.token')"
       registry="$(printf '%s' "$IMAGE" | cut -d/ -f1)"
-      printf '%s' "$acr_password" | docker login "$registry" --username "$acr_user" --password-stdin
-      unset acr acr_password
+      printf '%s' "$registry_token" | docker login "$registry" --username "$registry_user" --password-stdin
+      unset REGISTRY_DATA registry_token
       docker pull "$IMAGE"
+      docker logout "$registry" >/dev/null 2>&1 || true
       docker rm -f proxymesh-gateway 2>/dev/null || true
       exec docker run --name proxymesh-gateway --network host \
         --env-file /run/proxymesh/gateway.env \

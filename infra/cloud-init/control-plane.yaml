@@ -12,6 +12,7 @@ write_files:
       DATABASE_HOST=__DATABASE_HOST__
       DATABASE_SECRET_NAME=__DATABASE_SECRET_NAME__
       RUNTIME_SECRET_NAME=__RUNTIME_SECRET_NAME__
+      REGISTRY_SECRET_NAME=__REGISTRY_SECRET_NAME__
       RAM_ROLE_NAME=__CONTROL_RAM_ROLE_NAME__
   - path: /opt/proxymesh/bin/start-control-plane.sh
     owner: root:root
@@ -24,6 +25,7 @@ write_files:
       install -d -m 0700 /run/proxymesh
       runtime="$(aliyun kms GetSecretValue --SecretName "$RUNTIME_SECRET_NAME" | jq -r '.SecretData')"
       database="$(aliyun kms GetSecretValue --SecretName "$DATABASE_SECRET_NAME" | jq -r '.SecretData')"
+      registry_data="$(aliyun kms GetSecretValue --SecretName "$REGISTRY_SECRET_NAME" | jq -r '.SecretData')"
       password="$(printf '%s' "$database" | jq -r '.password | @uri')"
       umask 077
       printf '%s' "$runtime" | jq -r '
@@ -37,13 +39,13 @@ write_files:
       printf '%s' "$runtime" | jq -r '.gatewayClientCA' > /run/proxymesh/gateway-client-ca.pem
       chown -R 65532:65532 /run/proxymesh
       unset runtime database password
-      acr="$(aliyun cr GetAuthorizationToken --RegionId cn-hongkong)"
-      acr_user="$(printf '%s' "$acr" | jq -r '.TempUsername')"
-      acr_password="$(printf '%s' "$acr" | jq -r '.AuthorizationToken')"
+      registry_user="$(printf '%s' "$registry_data" | jq -r '.username')"
+      registry_token="$(printf '%s' "$registry_data" | jq -r '.token')"
       registry="$(printf '%s' "$IMAGE" | cut -d/ -f1)"
-      printf '%s' "$acr_password" | docker login "$registry" --username "$acr_user" --password-stdin
-      unset acr acr_password
+      printf '%s' "$registry_token" | docker login "$registry" --username "$registry_user" --password-stdin
+      unset registry_data registry_token
       docker pull "$IMAGE"
+      docker logout "$registry" >/dev/null 2>&1 || true
       docker rm -f proxymesh-control-plane 2>/dev/null || true
       exec docker run --name proxymesh-control-plane --network host \
         --env-file /run/proxymesh/control.env \

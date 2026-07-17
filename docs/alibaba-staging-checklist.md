@@ -10,7 +10,11 @@ capacity changes are automated by GitHub Actions after this bootstrap.
   zones that support the chosen ECS and RDS types.
 - A current Ubuntu 24.04 LTS x86_64 or Alibaba Cloud Linux 3 image ID and an
   available ECS instance type. Bootstrap supports both apt and yum/dnf systems.
-- An ACR registry/namespace containing the Gateway and Control Plane image digests.
+- Private GHCR packages `ghcr.io/gemini-nx/proxy-mesh-gateway` and
+  `ghcr.io/gemini-nx/proxy-mesh-control-plane`.
+- A dedicated GitHub PAT classic with only the access required to read those
+  packages. Export its owner as `GHCR_USERNAME` and token as `GHCR_TOKEN`; the
+  parameter builder stores them in an environment-scoped KMS secret.
 - The device source CIDR. When mainland carrier NAT addresses change frequently,
   use `0.0.0.0/0`; access then relies on per-device Shadowsocks credentials and
   unknown ports remain closed on every Gateway.
@@ -36,6 +40,8 @@ For staging, generate correctly scoped material with:
 scripts/generate-runtime-secrets.sh /private/tmp/proxymesh-staging-secrets \
   control.internal proxy.example.com canary-001
 export RUNTIME_SECRET_DATA="$(cat /private/tmp/proxymesh-staging-secrets/runtime-secret.json)"
+export GHCR_USERNAME="your-github-token-owner"
+read -r -s GHCR_TOKEN && export GHCR_TOKEN
 ```
 
 Keep `ca-key.pem` offline and do not reuse staging certificates or tokens in
@@ -44,12 +50,12 @@ production.
 ## Account preparation
 
 1. Enable ROS, ECS, ESS, NLB, NAT Gateway/EIP, RDS PostgreSQL, KMS, OOS,
-   Cloud Assistant, ACR, SLS and CloudMonitor in `cn-hongkong`.
+   Cloud Assistant, SLS and CloudMonitor in `cn-hongkong`.
 2. Confirm quota for one public and one private NLB, four Gateway ECS instances,
    one Control Plane ECS instance, an ESS maximum of 20, one NAT Gateway/EIP,
    and one multi-zone RDS instance.
-3. Create the ACR namespace and repositories `proxymesh/gateway` and
-   `proxymesh/control-plane`.
+3. Create a PAT classic with `read:packages`, authorize it for the organization
+   if SSO is enforced, and keep the two GHCR packages private.
 4. Configure GitHub OIDC trust and the release RAM role, restricted to this
    repository and the matching GitHub Environment.
 
@@ -87,12 +93,16 @@ Set these separately for `staging` and `production`:
 ```text
 ALIBABA_CLOUD_OIDC_PROVIDER_ARN
 ALIBABA_CLOUD_RELEASE_ROLE_ARN
-ACR_REGISTRY
+DEPLOY_ENABLED
 ROS_STACK_NAME
 GATEWAY_SCALING_GROUP_ID
 ```
 
 Protect the `production` Environment with required reviewers. The release role
-needs only ACR push, ROS change-set/stack update, ESS describe/modify/remove,
+needs only ROS change-set/stack update, ESS describe/modify/remove,
 and the read permissions needed to inspect rollout state. No long-lived
 AccessKey is stored in GitHub.
+
+Keep repository variable `DEPLOY_ENABLED=false` until the first ROS stack is
+created and both GitHub Environments are configured. Main-branch pushes still
+build and publish immutable GHCR images; cloud deployment jobs remain skipped.
