@@ -1,0 +1,45 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: proxymesh_test
+          POSTGRES_USER: proxymesh
+          POSTGRES_PASSWORD: test-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U proxymesh -d proxymesh_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://proxymesh:test-only-password@127.0.0.1:5432/proxymesh_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l apps internal db)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and integration tests
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Build binaries
+        run: go build ./apps/control-plane ./apps/gateway
+      - name: Validate Compose
+        run: docker compose config --quiet
+      - name: Build containers
+        run: |
+          docker build -f Dockerfile.control-plane -t proxymesh-control-plane:test .
+          docker build -f Dockerfile.gateway -t proxymesh-gateway:test .

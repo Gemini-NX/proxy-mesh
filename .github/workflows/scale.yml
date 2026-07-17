@@ -1,0 +1,54 @@
+name: Scale Gateways
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        required: true
+      desired_capacity:
+        description: Desired Gateway count (4-20)
+        type: number
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: proxymesh-scale-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  scale:
+    if: ${{ inputs.desired_capacity >= 4 && inputs.desired_capacity <= 20 }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CLOUD_RELEASE_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CLOUD_OIDC_PROVIDER_ARN }}
+          audience: github-actions
+      - uses: aliyun/setup-aliyun-cli-action@v1
+      - name: Change only desired capacity through ROS
+        env:
+          REGION: cn-hongkong
+          STACK: ${{ vars.ROS_STACK_NAME }}
+          DESIRED: ${{ inputs.desired_capacity }}
+        shell: bash
+        run: |
+          parameters="$(jq -nc --arg value "$DESIRED" '[{ParameterKey:"GatewayDesiredCapacity",ParameterValue:$value}]')"
+          name="scale-${GITHUB_RUN_ID}"
+          response="$(aliyun ros CreateChangeSet --RegionId "$REGION" --StackName "$STACK" --ChangeSetName "$name" --ChangeSetType UPDATE --Parameters "$parameters")"
+          id="$(jq -r '.ChangeSetId' <<<"$response")"
+          for _ in {1..60}; do
+            aliyun ros GetChangeSet --RegionId "$REGION" --ChangeSetId "$id" > change-set.json
+            status="$(jq -r '.Status' change-set.json)"
+            [[ "$status" == CREATE_COMPLETE ]] && break
+            [[ "$status" == *FAILED ]] && exit 1
+            sleep 5
+          done
+          scripts/guard-change-set.sh change-set.json
+          changed="$(jq -r '[.Changes[]? | (.ResourceChange // .).LogicalResourceId] | unique | join(",")' change-set.json)"
+          test "$changed" = "GatewayScalingGroup" || { echo "unexpected resources: $changed" >&2; exit 1; }
+          aliyun ros ExecuteChangeSet --RegionId "$REGION" --ChangeSetId "$id"

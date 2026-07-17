@@ -1,0 +1,115 @@
+#cloud-config
+package_update: true
+packages:
+  - docker
+  - aliyun-cli
+  - curl
+  - jq
+write_files:
+  - path: /etc/proxymesh/bootstrap.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      IMAGE=__GATEWAY_IMAGE__
+      CONTROL_GRPC_ADDR=__CONTROL_GRPC_ADDR__
+      KMS_SECRET_NAME=__KMS_SECRET_NAME__
+  - path: /opt/proxymesh/bin/start-gateway.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env sh
+      set -eu
+      . /etc/proxymesh/bootstrap.env
+      install -d -m 0700 /run/proxymesh
+      install -d -o 65532 -g 65532 -m 0700 /var/lib/proxymesh
+      SECRET_DATA="$(aliyun kms GetSecretValue --SecretName "$KMS_SECRET_NAME" | jq -r '.SecretData')"
+      umask 077
+      printf '%s' "$SECRET_DATA" | jq -r '
+        "ENCRYPTION_KEY=" + .encryptionKey,
+        "CANARY_DEVICE_ID=" + (.canaryDeviceId // ""),
+        "CONTROL_TLS_SERVER_NAME=" + (.controlTLSServerName // "")
+      ' > /run/proxymesh/gateway.env
+      if printf '%s' "$SECRET_DATA" | jq -e '
+        (.controlCA // "") != "" and
+        (.controlCert // "") != "" and
+        (.controlKey // "") != ""
+      ' >/dev/null; then
+        printf '%s' "$SECRET_DATA" | jq -r '.controlCA' > /run/proxymesh/control-ca.pem
+        printf '%s' "$SECRET_DATA" | jq -r '.controlCert' > /run/proxymesh/control-cert.pem
+        printf '%s' "$SECRET_DATA" | jq -r '.controlKey' > /run/proxymesh/control-key.pem
+        chown 65532:65532 /run/proxymesh/control-ca.pem /run/proxymesh/control-cert.pem /run/proxymesh/control-key.pem
+        printf '%s\n' \
+          'CONTROL_TLS_CA=/run/proxymesh/control-ca.pem' \
+          'CONTROL_TLS_CERT=/run/proxymesh/control-cert.pem' \
+          'CONTROL_TLS_KEY=/run/proxymesh/control-key.pem' \
+          >> /run/proxymesh/gateway.env
+      fi
+      unset SECRET_DATA
+      acr="$(aliyun cr GetAuthorizationToken --RegionId cn-hongkong)"
+      acr_user="$(printf '%s' "$acr" | jq -r '.TempUsername')"
+      acr_password="$(printf '%s' "$acr" | jq -r '.AuthorizationToken')"
+      registry="$(printf '%s' "$IMAGE" | cut -d/ -f1)"
+      printf '%s' "$acr_password" | docker login "$registry" --username "$acr_user" --password-stdin
+      unset acr acr_password
+      docker pull "$IMAGE"
+      docker rm -f proxymesh-gateway 2>/dev/null || true
+      exec docker run --name proxymesh-gateway --network host \
+        --env-file /run/proxymesh/gateway.env \
+        -e CONTROL_GRPC_ADDR="$CONTROL_GRPC_ADDR" \
+        -e GATEWAY_ID="$(hostname)" \
+        -e GATEWAY_ADDRESS="$(hostname -I | awk '{print $1}')" \
+        -e SNAPSHOT_PATH=/var/lib/proxymesh/routes.snapshot \
+        -e SHADOWSOCKS_LISTEN_HOST=0.0.0.0 -e HEALTH_ADDR=:18080 \
+        -e REQUIRE_CANARY=true \
+        -v /run/proxymesh:/run/proxymesh:ro \
+        -v /var/lib/proxymesh:/var/lib/proxymesh \
+        "$IMAGE"
+  - path: /opt/proxymesh/bin/lifecycle-scale-out.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env sh
+      set -eu
+      systemctl restart proxymesh-gateway
+      i=0
+      until curl -fsS http://127.0.0.1:18080/ready >/dev/null; do
+        i=$((i + 1))
+        [ "$i" -lt 100 ] || exit 1
+        sleep 5
+      done
+  - path: /opt/proxymesh/bin/lifecycle-scale-in.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env sh
+      set -eu
+      curl -fsS -X POST http://127.0.0.1:18080/drain
+      i=0
+      while [ "$i" -lt 120 ]; do
+        active="$(curl -fsS http://127.0.0.1:18080/metrics | awk '/^proxymesh_active_connections / {print $2}')"
+        [ "${active:-1}" = "0" ] && exit 0
+        i=$((i + 1))
+        sleep 5
+      done
+      exit 0
+  - path: /etc/systemd/system/proxymesh-gateway.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=ProxyMesh Gateway container
+      After=docker.service network-online.target
+      Wants=docker.service network-online.target
+      [Service]
+      Type=simple
+      ExecStart=/opt/proxymesh/bin/start-gateway.sh
+      ExecStop=/usr/bin/curl -fsS -X POST http://127.0.0.1:18080/drain
+      Restart=on-failure
+      RestartSec=5
+      TimeoutStopSec=610
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - systemctl enable --now docker
+  - systemctl daemon-reload
+  - systemctl enable --now proxymesh-gateway

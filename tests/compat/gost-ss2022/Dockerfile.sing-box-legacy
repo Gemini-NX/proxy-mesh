@@ -1,0 +1,2 @@
+FROM ghcr.io/sagernet/sing-box:latest
+COPY sing-box-legacy.json /etc/sing-box/config.json

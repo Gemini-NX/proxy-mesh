@@ -1,0 +1,239 @@
+openapi: 3.1.0
+info:
+  title: ProxyMesh Control API
+  version: 0.1.0
+servers:
+  - url: https://control.example.com
+security:
+  - bearerAuth: []
+paths:
+  /v1/devices:
+    post:
+      summary: Create a device and return its credentials once
+      operationId: createDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: {type: string}
+                listenPort: {type: integer, minimum: 1024, maximum: 65535, description: Preserve the existing device port when importing}
+                shadowsocksMethod: {type: string, enum: [aes-256-gcm, 2022-blake3-aes-128-gcm], default: aes-256-gcm}
+                shadowsocksPassword: {type: string, minLength: 8, writeOnly: true, description: Preserve the existing password when importing}
+      responses:
+        "201":
+          description: Device credentials and sing-box outbound
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedDevice"}
+  /v1/devices/{deviceId}/credentials/rotate:
+    post:
+      summary: Rotate and return a device password once
+      operationId: rotateDeviceCredential
+      parameters: [{$ref: "#/components/parameters/DeviceId"}]
+      responses:
+        "200": {description: New one-time credential}
+  /v1/devices/{deviceId}/ingresses:
+    post:
+      summary: Add a parallel Shadowsocks ingress for a device migration
+      operationId: addDeviceIngress
+      parameters: [{$ref: "#/components/parameters/DeviceId"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                listenPort: {type: integer, minimum: 1024, maximum: 65535}
+                method: {type: string, enum: [aes-256-gcm, 2022-blake3-aes-128-gcm], default: 2022-blake3-aes-128-gcm}
+                password: {type: string, writeOnly: true, description: Omit to generate a method-compatible credential}
+      responses:
+        "201": {description: One-time ingress credential and sing-box outbound}
+        "409": {description: Port already belongs to the device}
+        "503": {description: A ready gateway did not prepare or activate the ingress}
+  /v1/devices/{deviceId}/ingresses/{port}:
+    delete:
+      summary: Retire an old device ingress after migration
+      operationId: deleteDeviceIngress
+      parameters:
+        - {$ref: "#/components/parameters/DeviceId"}
+        - {name: port, in: path, required: true, schema: {type: integer, minimum: 1, maximum: 65535}}
+      responses:
+        "204": {description: Ingress removed from every ready gateway}
+        "409": {description: The ingress is the device's last ingress}
+        "503": {description: A ready gateway did not acknowledge the change}
+  /v1/devices/{deviceId}/route:
+    put:
+      summary: Atomically deploy a SOCKS5 route to all ready gateways
+      operationId: putDeviceRoute
+      parameters: [{$ref: "#/components/parameters/DeviceId"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PutRoute"}
+      responses:
+        "200": {description: Activated route without its password}
+        "409": {description: expectedVersion did not match}
+        "503": {description: A ready gateway did not acknowledge}
+  /v1/devices/{deviceId}/status:
+    get:
+      summary: Get device and active route status
+      operationId: getDeviceStatus
+      parameters: [{$ref: "#/components/parameters/DeviceId"}]
+      responses:
+        "200": {description: Device status}
+  /v1/devices/{deviceId}/connections/interrupt:
+    post:
+      summary: Close existing connections for a device on every gateway
+      operationId: interruptDeviceConnections
+      parameters: [{$ref: "#/components/parameters/DeviceId"}]
+      responses:
+        "204": {description: Interrupt acknowledged by every ready gateway}
+  /v1/gateways:
+    get:
+      summary: List registered gateways
+      operationId: listGateways
+      responses:
+        "200": {description: Gateway list}
+  /v1/gateways/{gatewayId}/draining:
+    post:
+      summary: Include or exclude a connected Gateway from readiness and publication quorum
+      operationId: setGatewayDraining
+      parameters:
+        - {name: gatewayId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draining]
+              properties: {draining: {type: boolean}}
+      responses:
+        "204": {description: Gateway acknowledged the state change}
+        "404": {description: Gateway is not connected}
+  /v1/providers:
+    get:
+      summary: List proxy-provider rules without secret values
+      operationId: listProviders
+      responses:
+        "200": {description: Provider definitions and configured secret keys}
+  /v1/providers/{providerId}:
+    put:
+      summary: Create or update a proxy-provider adapter
+      operationId: putProvider
+      parameters:
+        - {name: providerId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PutProvider"}
+      responses:
+        "200": {description: Provider definition without secret values}
+        "400": {description: Invalid provider rule or plaintext password template}
+  /v1/devices/{deviceId}/route/from-provider:
+    post:
+      summary: Generate and atomically publish a route through a configured provider
+      operationId: putRouteFromProvider
+      parameters: [{$ref: "#/components/parameters/DeviceId"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [country, expectedVersion]
+              properties:
+                providerId: {type: string, description: Omit to use enabled provider weights}
+                country: {type: string}
+                state: {type: string}
+                city: {type: string}
+                expectedVersion: {type: integer, minimum: 0}
+      responses:
+        "200": {description: Activated generated route without its password}
+        "409": {description: Version conflict or disabled provider}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  parameters:
+    DeviceId: {name: deviceId, in: path, required: true, schema: {type: string}}
+  schemas:
+    CreatedDevice:
+      type: object
+      required: [deviceId, listenPort, method, password, singBoxOutbound]
+      properties:
+        deviceId: {type: string}
+        listenPort: {type: integer}
+        method: {type: string, enum: [aes-256-gcm, 2022-blake3-aes-128-gcm]}
+        password: {type: string, writeOnly: true}
+        singBoxOutbound: {type: object, additionalProperties: true}
+    PutRoute:
+      type: object
+      required: [host, port, username, password, expectedVersion]
+      properties:
+        host: {type: string}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        username: {type: string}
+        password: {type: string, writeOnly: true}
+        expiresAt: {type: [string, "null"], format: date-time}
+        expectedVersion: {type: integer, minimum: 0}
+    PutProvider:
+      type: object
+      required: [enabled, weight, config]
+      properties:
+        enabled: {type: boolean}
+        weight: {type: integer, minimum: 0, maximum: 10000}
+        config:
+          type: object
+          required: [protocol, host, port, username, password, session]
+          properties:
+            protocol: {type: string, const: socks5}
+            host: {$ref: "#/components/schemas/ValueRule"}
+            port: {$ref: "#/components/schemas/PortRule"}
+            username: {$ref: "#/components/schemas/ValueRule"}
+            password: {$ref: "#/components/schemas/ValueRule"}
+            countryAliases: {type: object, additionalProperties: {type: string}}
+            stateFallbackWeights: {type: object, additionalProperties: {type: number, exclusiveMinimum: 0}}
+            stateFallbackByCountry:
+              type: object
+              additionalProperties:
+                type: object
+                additionalProperties: {type: number, exclusiveMinimum: 0}
+            session:
+              type: object
+              required: [type]
+              properties:
+                type: {type: string, enum: [uuid, int, alnum]}
+                min: {type: integer}
+                max: {type: integer}
+                length: {type: integer}
+            sessionMinutes: {type: integer, minimum: 0}
+            routeTTLMinutes: {type: integer, minimum: 0, description: Optional route expiry independent from supplier sticky-session duration}
+        secrets:
+          type: object
+          writeOnly: true
+          additionalProperties: {type: string}
+    ValueRule:
+      type: object
+      properties:
+        default: {type: string}
+        withState: {type: string}
+        withCity: {type: string}
+        byCountry: {type: object, additionalProperties: {type: string}}
+    PortRule:
+      type: object
+      properties:
+        default: {type: integer, minimum: 1, maximum: 65535}
+        byCountry:
+          type: object
+          additionalProperties:
+            type: object
+            required: [from, to]
+            properties:
+              from: {type: integer, minimum: 1, maximum: 65535}
+              to: {type: integer, minimum: 1, maximum: 65535}

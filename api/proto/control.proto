@@ -1,0 +1,77 @@
+syntax = "proto3";
+package proxymesh.control.v1;
+
+// Connect carries Register, FetchSnapshot/WatchRouteChanges, PrepareRoute,
+// ActivateRoute, Acknowledge, Heartbeat and SetDraining over one ordered
+// bidirectional stream. Phase one uses a registered JSON gRPC codec so the Go
+// runtime can be built without protoc; these messages are the migration target
+// for the standard protobuf codec.
+service GatewayControl {
+  rpc Connect(stream ControlFrame) returns (stream ControlFrame);
+}
+
+message ControlFrame {
+  string request_id = 1;
+  oneof body {
+    Register register = 2;
+    FetchSnapshot fetch_snapshot = 3;
+    Snapshot snapshot = 4;
+    PrepareRoute prepare_route = 5;
+    ActivateRoute activate_route = 6;
+    Acknowledge acknowledge = 7;
+    Heartbeat heartbeat = 8;
+    SetDraining set_draining = 9;
+    InterruptConnections interrupt_connections = 10;
+    DeviceCredentialChanged device_credential_changed = 11;
+    PrepareDevice prepare_device = 12;
+    ActivateDevice activate_device = 13;
+  }
+}
+
+message Register { string gateway_id = 1; string private_address = 2; }
+message FetchSnapshot { int64 current_version = 1; }
+message Snapshot { repeated Route routes = 1; }
+message PrepareRoute { Route route = 1; }
+message ActivateRoute { Route route = 1; }
+message Acknowledge { string gateway_id = 1; string error = 2; }
+message Heartbeat {
+  string gateway_id = 1;
+  string status = 2;
+  int64 applied_version = 3;
+  int64 active_connections = 4;
+}
+message SetDraining { bool draining = 1; }
+message InterruptConnections { string device_id = 1; }
+message DeviceCredentialChanged {
+  string device_id = 1;
+  string username = 2;
+  string password_hash = 3;
+}
+message PrepareDevice {
+  string device_id = 1;
+  repeated DeviceIngress ingresses = 2;
+}
+message ActivateDevice {
+  string device_id = 1;
+  repeated DeviceIngress ingresses = 2;
+}
+message DeviceIngress {
+  uint32 port = 1;
+  string method = 2;
+  string password = 3;
+  bool primary = 4;
+}
+message Route {
+  string device_id = 1;
+  string device_username = 2;
+  string device_password_hash = 3;
+  int64 version = 4;
+  string proxy_host = 5;
+  uint32 proxy_port = 6;
+  string proxy_username = 7;
+  string proxy_password = 8;
+  string expires_at = 9;
+  string provider_id = 10;
+  map<string, string> generation_metadata = 11;
+  repeated DeviceIngress ingresses = 12;
+}

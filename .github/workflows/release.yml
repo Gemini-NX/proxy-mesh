@@ -1,0 +1,134 @@
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: proxymesh-release
+  cancel-in-progress: false
+env:
+  REGION: cn-hongkong
+  ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      gateway_image: ${{ steps.images.outputs.gateway }}
+      control_image: ${{ steps.images.outputs.control }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CLOUD_RELEASE_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CLOUD_OIDC_PROVIDER_ARN }}
+          audience: github-actions
+          role-session-name: proxymesh-${{ github.run_id }}
+      - uses: aliyun/setup-aliyun-cli-action@v1
+      - name: Obtain short-lived ACR login
+        id: acr
+        shell: bash
+        run: |
+          auth="$(aliyun cr GetAuthorizationToken --RegionId "$REGION")"
+          username="$(jq -r '.TempUsername' <<<"$auth")"
+          password="$(jq -r '.AuthorizationToken' <<<"$auth")"
+          echo "::add-mask::$password"
+          echo "username=$username" >> "$GITHUB_OUTPUT"
+          echo "password=$password" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ steps.acr.outputs.username }}
+          password: ${{ steps.acr.outputs.password }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push immutable images
+        id: images
+        shell: bash
+        run: |
+          gateway="$ACR_REGISTRY/proxymesh/gateway:${GITHUB_SHA}"
+          control="$ACR_REGISTRY/proxymesh/control-plane:${GITHUB_SHA}"
+          docker buildx build --platform linux/amd64 -f Dockerfile.gateway --push -t "$gateway" .
+          docker buildx build --platform linux/amd64 -f Dockerfile.control-plane --push -t "$control" .
+          gateway_digest="$(docker buildx imagetools inspect "$gateway" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          control_digest="$(docker buildx imagetools inspect "$control" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "gateway=$ACR_REGISTRY/proxymesh/gateway@$gateway_digest" >> "$GITHUB_OUTPUT"
+          echo "control=$ACR_REGISTRY/proxymesh/control-plane@$control_digest" >> "$GITHUB_OUTPUT"
+
+  staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CLOUD_RELEASE_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CLOUD_OIDC_PROVIDER_ARN }}
+          audience: github-actions
+      - uses: aliyun/setup-aliyun-cli-action@v1
+      - name: Create and inspect staging change set
+        env:
+          STACK: ${{ vars.ROS_STACK_NAME }}
+          GATEWAY_IMAGE: ${{ needs.build.outputs.gateway_image }}
+          CONTROL_GRPC_ADDR: ${{ vars.CONTROL_GRPC_ADDR }}
+        shell: bash
+        run: |
+          cloud_init="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE" "$CONTROL_GRPC_ADDR" proxymesh/runtime)"
+          parameters="$(jq -nc --arg image "$GATEWAY_IMAGE" --arg userData "$cloud_init" '[{ParameterKey:"GatewayImage",ParameterValue:$image},{ParameterKey:"GatewayUserData",ParameterValue:$userData}]')"
+          name="release-${GITHUB_RUN_ID}-staging"
+          response="$(aliyun ros CreateChangeSet --RegionId "$REGION" --StackName "$STACK" --ChangeSetName "$name" --ChangeSetType UPDATE --Parameters "$parameters")"
+          id="$(jq -r '.ChangeSetId' <<<"$response")"
+          for _ in {1..60}; do
+            aliyun ros GetChangeSet --RegionId "$REGION" --ChangeSetId "$id" > change-set.json
+            status="$(jq -r '.Status' change-set.json)"
+            [[ "$status" == CREATE_COMPLETE ]] && break
+            [[ "$status" == *FAILED ]] && exit 1
+            sleep 5
+          done
+          scripts/guard-change-set.sh change-set.json
+          aliyun ros ExecuteChangeSet --RegionId "$REGION" --ChangeSetId "$id"
+      - name: Smoke test
+        env:
+          CONTROL_URL: ${{ vars.CONTROL_URL }}
+          ADMIN_TOKEN: ${{ secrets.SMOKE_ADMIN_TOKEN }}
+        run: tests/integration/smoke.sh
+
+  production:
+    needs: [build, staging]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CLOUD_RELEASE_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CLOUD_OIDC_PROVIDER_ARN }}
+          audience: github-actions
+      - uses: aliyun/setup-aliyun-cli-action@v1
+      - name: Update production stack through a guarded change set
+        env:
+          STACK: ${{ vars.ROS_STACK_NAME }}
+          GATEWAY_IMAGE: ${{ needs.build.outputs.gateway_image }}
+          CONTROL_GRPC_ADDR: ${{ vars.CONTROL_GRPC_ADDR }}
+        shell: bash
+        run: |
+          cloud_init="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE" "$CONTROL_GRPC_ADDR" proxymesh/runtime)"
+          parameters="$(jq -nc --arg image "$GATEWAY_IMAGE" --arg userData "$cloud_init" '[{ParameterKey:"GatewayImage",ParameterValue:$image},{ParameterKey:"GatewayUserData",ParameterValue:$userData}]')"
+          name="release-${GITHUB_RUN_ID}-production"
+          response="$(aliyun ros CreateChangeSet --RegionId "$REGION" --StackName "$STACK" --ChangeSetName "$name" --ChangeSetType UPDATE --Parameters "$parameters")"
+          id="$(jq -r '.ChangeSetId' <<<"$response")"
+          for _ in {1..60}; do
+            aliyun ros GetChangeSet --RegionId "$REGION" --ChangeSetId "$id" > change-set.json
+            status="$(jq -r '.Status' change-set.json)"
+            [[ "$status" == CREATE_COMPLETE ]] && break
+            [[ "$status" == *FAILED ]] && exit 1
+            sleep 5
+          done
+          scripts/guard-change-set.sh change-set.json
+          aliyun ros ExecuteChangeSet --RegionId "$REGION" --ChangeSetId "$id"
+      - name: Add, ready, and drain one Gateway at a time
+        env:
+          GATEWAY_SCALING_GROUP_ID: ${{ vars.GATEWAY_SCALING_GROUP_ID }}
+        run: scripts/rolling-replace-gateways.sh

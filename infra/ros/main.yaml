@@ -1,0 +1,311 @@
+ROSTemplateFormatVersion: '2015-09-01'
+Description: ProxyMesh phase-one infrastructure in Alibaba Cloud Hong Kong.
+Parameters:
+  ZoneIdA:
+    Type: String
+    Description: First cn-hongkong availability zone.
+  ZoneIdB:
+    Type: String
+    Description: Second cn-hongkong availability zone.
+  ECSImageId:
+    Type: String
+  ECSInstanceType:
+    Type: String
+    Default: ecs.c7.large
+  GatewayImage:
+    Type: String
+    Description: Immutable ACR image reference, preferably by digest.
+  GatewayUserData:
+    Type: String
+    Description: Rendered infra/cloud-init/gateway.yaml with all placeholders replaced.
+  ControlGRPCEndpoint:
+    Type: String
+    Description: Private control-plane gRPC endpoint including port 9090.
+  DevicePortStart:
+    Type: Number
+    Default: 50000
+    MinValue: 1024
+    MaxValue: 65535
+  DevicePortEnd:
+    Type: Number
+    Default: 59999
+    MinValue: 1024
+    MaxValue: 65535
+  GatewayDesiredCapacity:
+    Type: Number
+    Default: 4
+    MinValue: 4
+    MaxValue: 20
+  DBInstanceClass:
+    Type: String
+    Default: pg.n2.2c.1m
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+  RuntimeSecretData:
+    Type: String
+    NoEcho: true
+    Description: JSON containing encryptionKey, canaryDeviceId and controlTLSServerName.
+  OOSServiceRoleArn:
+    Type: String
+    Description: Role assumed by ESS lifecycle OOS tasks.
+Resources:
+  VPC:
+    Type: ALIYUN::ECS::VPC
+    Properties:
+      VpcName: proxymesh-vpc
+      CidrBlock: 10.42.0.0/16
+  VSwitchA:
+    Type: ALIYUN::ECS::VSwitch
+    Properties:
+      VpcId: {Ref: VPC}
+      ZoneId: {Ref: ZoneIdA}
+      VSwitchName: proxymesh-a
+      CidrBlock: 10.42.1.0/24
+  VSwitchB:
+    Type: ALIYUN::ECS::VSwitch
+    Properties:
+      VpcId: {Ref: VPC}
+      ZoneId: {Ref: ZoneIdB}
+      VSwitchName: proxymesh-b
+      CidrBlock: 10.42.2.0/24
+  GatewaySecurityGroup:
+    Type: ALIYUN::ECS::SecurityGroup
+    Properties:
+      VpcId: {Ref: VPC}
+      SecurityGroupName: proxymesh-gateway
+      SecurityGroupType: enterprise
+  GatewayProxyIngress:
+    Type: ALIYUN::ECS::SecurityGroupIngress
+    Properties:
+      SecurityGroupId: {Ref: GatewaySecurityGroup}
+      IpProtocol: tcp
+      PortRange: {'Fn::Join': ['', [{Ref: DevicePortStart}, '/', {Ref: DevicePortEnd}]]}
+      SourceCidrIp: 10.42.0.0/16
+  GatewayHealthIngress:
+    Type: ALIYUN::ECS::SecurityGroupIngress
+    Properties:
+      SecurityGroupId: {Ref: GatewaySecurityGroup}
+      IpProtocol: tcp
+      PortRange: 18080/18080
+      SourceCidrIp: 10.42.0.0/16
+  RuntimeSecret:
+    Type: ALIYUN::KMS::Secret
+    Properties:
+      SecretName: proxymesh/runtime
+      VersionId: v1
+      SecretData: {Ref: RuntimeSecretData}
+  GatewayRAMRole:
+    Type: ALIYUN::RAM::Role
+    Properties:
+      RoleName: proxymesh-gateway
+      AssumeRolePolicyDocument:
+        Version: '1'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: [ecs.aliyuncs.com]}
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: proxymesh-gateway-runtime
+          PolicyDocument:
+            Version: '1'
+            Statement:
+              - Effect: Allow
+                Action: ['kms:GetSecretValue']
+                Resource: {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/runtime'}
+              - Effect: Allow
+                Action: ['cr:GetAuthorizationToken']
+                Resource: '*'
+  EIP:
+    Type: ALIYUN::VPC::EIP
+    Properties:
+      Bandwidth: 200
+      InternetChargeType: PayByTraffic
+      Name: proxymesh-nat-eip
+  NATGateway:
+    Type: ALIYUN::VPC::NatGateway
+    Properties:
+      VpcId: {Ref: VPC}
+      VSwitchId: {Ref: VSwitchA}
+      NatGatewayName: proxymesh-nat
+      NatType: Enhanced
+  EIPAssociation:
+    Type: ALIYUN::VPC::EIPAssociation
+    Properties:
+      AllocationId: {Ref: EIP}
+      InstanceId: {Ref: NATGateway}
+  SNATEntryA:
+    Type: ALIYUN::VPC::SnatEntry
+    DependsOn: EIPAssociation
+    Properties:
+      SnatTableId: {'Fn::GetAtt': [NATGateway, SNatTableId]}
+      SourceVSwitchId: {Ref: VSwitchA}
+      SnatIp: {'Fn::GetAtt': [EIP, EipAddress]}
+  SNATEntryB:
+    Type: ALIYUN::VPC::SnatEntry
+    DependsOn: EIPAssociation
+    Properties:
+      SnatTableId: {'Fn::GetAtt': [NATGateway, SNatTableId]}
+      SourceVSwitchId: {Ref: VSwitchB}
+      SnatIp: {'Fn::GetAtt': [EIP, EipAddress]}
+  NLB:
+    Type: ALIYUN::NLB::LoadBalancer
+    Properties:
+      VpcId: {Ref: VPC}
+      LoadBalancerName: proxymesh-public
+      AddressType: Internet
+      AddressIpVersion: Ipv4
+      CrossZoneEnabled: true
+      DeletionProtectionEnabled: true
+      ModificationProtectionConfig: {Status: ConsoleProtection}
+      ZoneMappings:
+        - ZoneId: {Ref: ZoneIdA}
+          VSwitchId: {Ref: VSwitchA}
+        - ZoneId: {Ref: ZoneIdB}
+          VSwitchId: {Ref: VSwitchB}
+  NLBServerGroup:
+    Type: ALIYUN::NLB::ServerGroup
+    Properties:
+      VpcId: {Ref: VPC}
+      ServerGroupName: proxymesh-gateways
+      ServerGroupType: Instance
+      Protocol: TCP
+      AnyPortEnabled: true
+      Scheduler: rr
+      ConnectionDrainEnabled: true
+      ConnectionDrainTimeout: 600
+      HealthCheckConfig:
+        HealthCheckEnabled: true
+        HealthCheckType: Http
+        HealthCheckConnectPort: 18080
+        HealthCheckUrl: /ready
+        HttpCheckMethod: GET
+        HealthCheckHttpCode: [http_2xx]
+        HealthCheckInterval: 5
+        HealthCheckConnectTimeout: 3
+        HealthyThreshold: 2
+        UnhealthyThreshold: 2
+  NLBListener:
+    Type: ALIYUN::NLB::Listener
+    Properties:
+      LoadBalancerId: {Ref: NLB}
+      ServerGroupId: {Ref: NLBServerGroup}
+      ListenerProtocol: TCP
+      ListenerPort: {Ref: DevicePortStart}
+      StartPort: {Ref: DevicePortStart}
+      EndPort: {Ref: DevicePortEnd}
+      IdleTimeout: 60
+      Enable: true
+  GatewayScalingGroup:
+    Type: ALIYUN::ESS::ScalingGroup
+    Properties:
+      ScalingGroupName: proxymesh-gateway
+      MinSize: 4
+      MaxSize: 20
+      DesiredCapacity: {Ref: GatewayDesiredCapacity}
+      VSwitchIds: [{Ref: VSwitchA}, {Ref: VSwitchB}]
+      DefaultCooldown: 300
+      MultiAZPolicy: BALANCE
+      RemovalPolicys: [OldestScalingConfiguration, OldestInstance]
+  GatewayScalingConfiguration:
+    Type: ALIYUN::ESS::ScalingConfiguration
+    Properties:
+      ScalingGroupId: {Ref: GatewayScalingGroup}
+      ScalingConfigurationName: proxymesh-gateway
+      ImageId: {Ref: ECSImageId}
+      InstanceType: {Ref: ECSInstanceType}
+      SecurityGroupId: {Ref: GatewaySecurityGroup}
+      RamRoleName: {'Fn::GetAtt': [GatewayRAMRole, RoleName]}
+      InternetMaxBandwidthOut: 0
+      SystemDiskCategory: cloud_essd
+      SystemDiskSize: 40
+      UserData: {Ref: GatewayUserData}
+  GatewayServerGroupAttachment:
+    Type: ALIYUN::ESS::ServerGroupAttachment
+    Properties:
+      ScalingGroupId: {Ref: GatewayScalingGroup}
+      ServerGroups:
+        - Type: NLB
+          ServerGroupId: {Ref: NLBServerGroup}
+          Port: 0
+          Weight: 100
+  ScaleOutLifecycleHook:
+    Type: ALIYUN::ESS::LifecycleHook
+    Properties:
+      ScalingGroupId: {Ref: GatewayScalingGroup}
+      LifecycleHookName: proxymesh-scale-out-ready
+      LifecycleTransition: SCALE_OUT
+      HeartbeatTimeout: 600
+      DefaultResult: ABANDON
+      NotificationArn: {'Fn::Sub': '${OOSServiceRoleArn}:oos/ACS-ESS-LifeCycleRunCommand'}
+      NotificationMetadata: '{"commandContent":"/opt/proxymesh/bin/lifecycle-scale-out.sh","commandType":"RunShellScript"}'
+  ScaleInLifecycleHook:
+    Type: ALIYUN::ESS::LifecycleHook
+    Properties:
+      ScalingGroupId: {Ref: GatewayScalingGroup}
+      LifecycleHookName: proxymesh-scale-in-drain
+      LifecycleTransition: SCALE_IN
+      HeartbeatTimeout: 600
+      DefaultResult: CONTINUE
+      NotificationArn: {'Fn::Sub': '${OOSServiceRoleArn}:oos/ACS-ESS-LifeCycleRunCommand'}
+      NotificationMetadata: '{"commandContent":"/opt/proxymesh/bin/lifecycle-scale-in.sh","commandType":"RunShellScript"}'
+  GatewayScalingGroupEnable:
+    Type: ALIYUN::ESS::ScalingGroupEnable
+    DependsOn: [GatewayScalingConfiguration, GatewayServerGroupAttachment, ScaleOutLifecycleHook, ScaleInLifecycleHook]
+    Properties:
+      ScalingGroupId: {Ref: GatewayScalingGroup}
+      ScalingConfigurationId: {Ref: GatewayScalingConfiguration}
+  CPUScaleOutRule:
+    Type: ALIYUN::ESS::ScalingRule
+    Properties:
+      ScalingGroupId: {Ref: GatewayScalingGroup}
+      ScalingRuleName: proxymesh-cpu-scale-out
+      ScalingRuleType: TargetTrackingScalingRule
+      MetricName: CpuUtilization
+      TargetValue: 70
+      DisableScaleIn: true
+      ScaleOutEvaluationCount: 3
+      EstimatedInstanceWarmup: 300
+  PostgreSQL:
+    Type: ALIYUN::RDS::DBInstance
+    Properties:
+      Engine: PostgreSQL
+      EngineVersion: '17.0'
+      DBInstanceClass: {Ref: DBInstanceClass}
+      DBInstanceStorage: 100
+      DBInstanceStorageType: cloud_essd
+      Category: HighAvailability
+      MultiAZ: true
+      VpcId: {Ref: VPC}
+      VSwitchId: {Ref: VSwitchA}
+      SecurityIPList: 10.42.0.0/16
+      MasterUsername: proxymesh
+      MasterUserPassword: {Ref: DBPassword}
+      DBInstanceDescription: ProxyMesh PostgreSQL
+  LogProject:
+    Type: ALIYUN::SLS::Project
+    Properties:
+      Name: {'Fn::Sub': 'proxymesh-${ALIYUN::StackId}'}
+      Description: ProxyMesh application and audit logs
+  LogStore:
+    Type: ALIYUN::SLS::Logstore
+    Properties:
+      ProjectName: {Ref: LogProject}
+      LogstoreName: gateway
+      PreserveStorage: true
+      TTL: 30
+      ShardCount: 2
+  MonitorGroup:
+    Type: ALIYUN::CMS::MonitorGroup
+    Properties:
+      GroupName: proxymesh
+Outputs:
+  NLBDNSName:
+    Value: {'Fn::GetAtt': [NLB, DNSName]}
+  NATPublicIP:
+    Value: {'Fn::GetAtt': [EIP, EipAddress]}
+  GatewayScalingGroupId:
+    Value: {Ref: GatewayScalingGroup}
+  PostgreSQLEndpoint:
+    Value: {'Fn::GetAtt': [PostgreSQL, InnerConnectionString]}
