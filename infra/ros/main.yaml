@@ -12,6 +12,18 @@ Parameters:
   ZoneIdB:
     Type: String
     Description: Second cn-hongkong availability zone.
+  ExistingVpcId:
+    Type: String
+    Description: Existing cn-hongkong VPC ID.
+  ExistingVpcCidr:
+    Type: String
+    Description: CIDR of the existing VPC, used for private control-plane access.
+  ExistingVSwitchIdA:
+    Type: String
+    Description: Existing vSwitch ID in ZoneIdA.
+  ExistingVSwitchIdB:
+    Type: String
+    Description: Existing vSwitch ID in ZoneIdB.
   ECSImageId:
     Type: String
   ECSInstanceType:
@@ -69,29 +81,10 @@ Parameters:
     NoEcho: true
     Description: Control-only JSON containing encryption key, admin token and mTLS server material.
 Resources:
-  VPC:
-    Type: ALIYUN::ECS::VPC
-    Properties:
-      VpcName: proxymesh-vpc
-      CidrBlock: 10.42.0.0/16
-  VSwitchA:
-    Type: ALIYUN::ECS::VSwitch
-    Properties:
-      VpcId: {Ref: VPC}
-      ZoneId: {Ref: ZoneIdA}
-      VSwitchName: proxymesh-a
-      CidrBlock: 10.42.1.0/24
-  VSwitchB:
-    Type: ALIYUN::ECS::VSwitch
-    Properties:
-      VpcId: {Ref: VPC}
-      ZoneId: {Ref: ZoneIdB}
-      VSwitchName: proxymesh-b
-      CidrBlock: 10.42.2.0/24
   GatewaySecurityGroup:
     Type: ALIYUN::ECS::SecurityGroup
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       SecurityGroupName: proxymesh-gateway
       SecurityGroupType: enterprise
   GatewayProxyIngress:
@@ -107,7 +100,7 @@ Resources:
       SecurityGroupId: {Ref: GatewaySecurityGroup}
       IpProtocol: tcp
       PortRange: 18080/18080
-      SourceCidrIp: 10.42.0.0/16
+      SourceCidrIp: {Ref: ExistingVpcCidr}
   GatewayRuntimeSecret:
     Type: ALIYUN::KMS::Secret
     Properties:
@@ -197,8 +190,8 @@ Resources:
   NATGateway:
     Type: ALIYUN::VPC::NatGateway
     Properties:
-      VpcId: {Ref: VPC}
-      VSwitchId: {Ref: VSwitchA}
+      VpcId: {Ref: ExistingVpcId}
+      VSwitchId: {Ref: ExistingVSwitchIdA}
       NatGatewayName: proxymesh-nat
       NatType: Enhanced
   EIPAssociation:
@@ -211,19 +204,19 @@ Resources:
     DependsOn: EIPAssociation
     Properties:
       SnatTableId: {'Fn::GetAtt': [NATGateway, SNatTableId]}
-      SourceVSwitchId: {Ref: VSwitchA}
+      SourceVSwitchId: {Ref: ExistingVSwitchIdA}
       SnatIp: {'Fn::GetAtt': [EIP, EipAddress]}
   SNATEntryB:
     Type: ALIYUN::VPC::SnatEntry
     DependsOn: EIPAssociation
     Properties:
       SnatTableId: {'Fn::GetAtt': [NATGateway, SNatTableId]}
-      SourceVSwitchId: {Ref: VSwitchB}
+      SourceVSwitchId: {Ref: ExistingVSwitchIdB}
       SnatIp: {'Fn::GetAtt': [EIP, EipAddress]}
   NLB:
     Type: ALIYUN::NLB::LoadBalancer
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       LoadBalancerName: proxymesh-public
       AddressType: Internet
       AddressIpVersion: Ipv4
@@ -232,13 +225,13 @@ Resources:
       ModificationProtectionConfig: {Status: ConsoleProtection}
       ZoneMappings:
         - ZoneId: {Ref: ZoneIdA}
-          VSwitchId: {Ref: VSwitchA}
+          VSwitchId: {Ref: ExistingVSwitchIdA}
         - ZoneId: {Ref: ZoneIdB}
-          VSwitchId: {Ref: VSwitchB}
+          VSwitchId: {Ref: ExistingVSwitchIdB}
   NLBServerGroup:
     Type: ALIYUN::NLB::ServerGroup
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       ServerGroupName: proxymesh-gateways
       ServerGroupType: Instance
       Protocol: TCP
@@ -276,7 +269,7 @@ Resources:
       MinSize: 4
       MaxSize: 20
       DesiredCapacity: {Ref: GatewayDesiredCapacity}
-      VSwitchIds: [{Ref: VSwitchA}, {Ref: VSwitchB}]
+      VSwitchIds: [{Ref: ExistingVSwitchIdA}, {Ref: ExistingVSwitchIdB}]
       DefaultCooldown: 300
       MultiAZPolicy: BALANCE
       RemovalPolicys: [OldestScalingConfiguration, OldestInstance]
@@ -356,9 +349,9 @@ Resources:
       DBInstanceStorageType: cloud_essd
       Category: HighAvailability
       MultiAZ: true
-      VpcId: {Ref: VPC}
-      VSwitchId: {Ref: VSwitchA}
-      SecurityIPList: 10.42.0.0/16
+      VpcId: {Ref: ExistingVpcId}
+      VSwitchId: {Ref: ExistingVSwitchIdA}
+      SecurityIPList: {Ref: ExistingVpcCidr}
       MasterUsername: proxymesh
       MasterUserPassword: {Ref: DBPassword}
       DBMappings:
@@ -368,7 +361,7 @@ Resources:
   ControlSecurityGroup:
     Type: ALIYUN::ECS::SecurityGroup
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       SecurityGroupName: proxymesh-control-plane
       SecurityGroupType: enterprise
   ControlAPIIngress:
@@ -377,14 +370,14 @@ Resources:
       SecurityGroupId: {Ref: ControlSecurityGroup}
       IpProtocol: tcp
       PortRange: 8080/8080
-      SourceCidrIp: 10.42.0.0/16
+      SourceCidrIp: {Ref: ExistingVpcCidr}
   ControlGRPCIngress:
     Type: ALIYUN::ECS::SecurityGroupIngress
     Properties:
       SecurityGroupId: {Ref: ControlSecurityGroup}
       IpProtocol: tcp
       PortRange: 9090/9090
-      SourceCidrIp: 10.42.0.0/16
+      SourceCidrIp: {Ref: ExistingVpcCidr}
   ControlInstance:
     Type: ALIYUN::ECS::Instance
     DependsOn: [PostgreSQL, ControlRuntimeSecret, DatabaseSecret, SNATEntryA]
@@ -392,8 +385,8 @@ Resources:
       InstanceName: proxymesh-control-plane
       ImageId: {Ref: ECSImageId}
       InstanceType: {Ref: ECSInstanceType}
-      VpcId: {Ref: VPC}
-      VSwitchId: {Ref: VSwitchA}
+      VpcId: {Ref: ExistingVpcId}
+      VSwitchId: {Ref: ExistingVSwitchIdA}
       SecurityGroupId: {Ref: ControlSecurityGroup}
       RamRoleName: {'Fn::GetAtt': [ControlRAMRole, RoleName]}
       InternetMaxBandwidthOut: 0
@@ -409,7 +402,7 @@ Resources:
   ControlNLB:
     Type: ALIYUN::NLB::LoadBalancer
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       LoadBalancerName: proxymesh-control
       AddressType: Intranet
       AddressIpVersion: Ipv4
@@ -417,13 +410,13 @@ Resources:
       DeletionProtectionEnabled: true
       ZoneMappings:
         - ZoneId: {Ref: ZoneIdA}
-          VSwitchId: {Ref: VSwitchA}
+          VSwitchId: {Ref: ExistingVSwitchIdA}
         - ZoneId: {Ref: ZoneIdB}
-          VSwitchId: {Ref: VSwitchB}
+          VSwitchId: {Ref: ExistingVSwitchIdB}
   ControlAPIServerGroup:
     Type: ALIYUN::NLB::ServerGroup
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       ServerGroupName: proxymesh-control-api
       Protocol: TCP
       HealthCheckConfig:
@@ -436,7 +429,7 @@ Resources:
   ControlGRPCServerGroup:
     Type: ALIYUN::NLB::ServerGroup
     Properties:
-      VpcId: {Ref: VPC}
+      VpcId: {Ref: ExistingVpcId}
       ServerGroupName: proxymesh-control-grpc
       Protocol: TCP
       HealthCheckConfig:

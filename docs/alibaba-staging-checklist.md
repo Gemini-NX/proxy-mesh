@@ -6,12 +6,14 @@ capacity changes are automated by GitHub Actions after this bootstrap.
 
 ## Values the operator must provide
 
-- Two distinct `cn-hongkong` zone IDs that support the chosen ECS and RDS types.
+- An existing `cn-hongkong` VPC ID, its CIDR, and two vSwitch IDs in distinct
+  zones that support the chosen ECS and RDS types.
 - A current Ubuntu 24.04 LTS x86_64 or Alibaba Cloud Linux 3 image ID and an
   available ECS instance type. Bootstrap supports both apt and yum/dnf systems.
 - An ACR registry/namespace containing the Gateway and Control Plane image digests.
-- The office public CIDR. Use a narrow `/32` or corporate NAT range; avoid the
-  example default `0.0.0.0/0` in production.
+- The device source CIDR. When mainland carrier NAT addresses change frequently,
+  use `0.0.0.0/0`; access then relies on per-device Shadowsocks credentials and
+  unknown ports remain closed on every Gateway.
 - A PostgreSQL master password, a 32-byte base64 encryption key, and a random
   admin token. Do not commit any of them.
 - A private CA, a Control Plane server certificate, and a Gateway client

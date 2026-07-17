@@ -6,7 +6,7 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 
-required=(ENVIRONMENT_NAME ZONE_ID_A ZONE_ID_B ECS_IMAGE_ID GATEWAY_IMAGE CONTROL_IMAGE DB_PASSWORD RUNTIME_SECRET_DATA DEVICE_SOURCE_CIDR)
+required=(ENVIRONMENT_NAME ZONE_ID_A ZONE_ID_B EXISTING_VPC_ID EXISTING_VPC_CIDR VSWITCH_ID_A VSWITCH_ID_B ECS_IMAGE_ID GATEWAY_IMAGE CONTROL_IMAGE DB_PASSWORD RUNTIME_SECRET_DATA)
 for name in "${required[@]}"; do
   [ -n "${!name:-}" ] || { echo "$name is required" >&2; exit 1; }
 done
@@ -28,16 +28,22 @@ umask 077
 jq -n \
   --arg environment "$ENVIRONMENT_NAME" \
   --arg zoneA "$ZONE_ID_A" --arg zoneB "$ZONE_ID_B" \
+  --arg vpc "$EXISTING_VPC_ID" --arg vpcCidr "$EXISTING_VPC_CIDR" \
+  --arg vswitchA "$VSWITCH_ID_A" --arg vswitchB "$VSWITCH_ID_B" \
   --arg ecsImage "$ECS_IMAGE_ID" --arg ecsType "${ECS_INSTANCE_TYPE:-ecs.c7.large}" \
   --arg gatewayImage "$GATEWAY_IMAGE" --arg controlImage "$CONTROL_IMAGE" \
   --arg gatewayUserData "$gateway_user_data" --arg controlUserData "$control_user_data" \
-  --arg sourceCidr "$DEVICE_SOURCE_CIDR" --arg dbPassword "$DB_PASSWORD" \
+  --arg sourceCidr "${DEVICE_SOURCE_CIDR:-0.0.0.0/0}" --arg dbPassword "$DB_PASSWORD" \
   --arg gatewayRuntime "$gateway_runtime" --arg controlRuntime "$control_runtime" \
   --arg desired "${GATEWAY_DESIRED_CAPACITY:-4}" \
   '[
     {ParameterKey:"EnvironmentName",ParameterValue:$environment},
     {ParameterKey:"ZoneIdA",ParameterValue:$zoneA},
     {ParameterKey:"ZoneIdB",ParameterValue:$zoneB},
+    {ParameterKey:"ExistingVpcId",ParameterValue:$vpc},
+    {ParameterKey:"ExistingVpcCidr",ParameterValue:$vpcCidr},
+    {ParameterKey:"ExistingVSwitchIdA",ParameterValue:$vswitchA},
+    {ParameterKey:"ExistingVSwitchIdB",ParameterValue:$vswitchB},
     {ParameterKey:"ECSImageId",ParameterValue:$ecsImage},
     {ParameterKey:"ECSInstanceType",ParameterValue:$ecsType},
     {ParameterKey:"GatewayImage",ParameterValue:$gatewayImage},
