@@ -127,10 +127,14 @@ func (g *Gateway) PrepareDevice(d model.Device) error {
 	defer g.listenersMu.Unlock()
 	for _, ingress := range d.EffectiveIngresses() {
 		if current, ok := g.listeners[ingress.Port]; ok {
-			if current.deviceID == d.ID && current.method == ingress.Method && current.password == ingress.Password {
-				continue
+			if current.deviceID != d.ID {
+				return fmt.Errorf("Shadowsocks ingress port %d is already reserved", ingress.Port)
 			}
-			return fmt.Errorf("Shadowsocks ingress port %d is already reserved", ingress.Port)
+			route := model.DeviceRoute{DeviceID: d.ID, IngressPort: ingress.Port, IngressMethod: ingress.Method, IngressPassword: ingress.Password}
+			if err := g.ValidateRoute(route); err != nil {
+				return err
+			}
+			continue
 		}
 		route := model.DeviceRoute{DeviceID: d.ID, IngressPort: ingress.Port, IngressMethod: ingress.Method, IngressPassword: ingress.Password}
 		if err := g.ValidateRoute(route); err != nil {

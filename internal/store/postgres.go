@@ -51,7 +51,7 @@ func (p *Postgres) CreateDevice(ctx context.Context, d model.Device) error {
 	}
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `INSERT INTO devices(id,username,password_hash,ingress_port,ingress_method,ingress_password_cipher,enabled,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, d.ID, d.Username, d.PasswordHash, ingressPort, d.IngressMethod, enc, d.Enabled, d.CreatedAt, d.UpdatedAt); err != nil {
-		return err
+		return mapErr(err)
 	}
 	for _, ingress := range d.EffectiveIngresses() {
 		passwordCipher, encryptErr := p.cipher.Encrypt([]byte(ingress.Password))
@@ -59,7 +59,7 @@ func (p *Postgres) CreateDevice(ctx context.Context, d model.Device) error {
 			return encryptErr
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO device_ingresses(device_id,port,method,password_cipher,is_primary,created_at) VALUES($1,$2,$3,$4,$5,$6)`, d.ID, ingress.Port, ingress.Method, passwordCipher, ingress.Primary, ingress.CreatedAt); err != nil {
-			return err
+			return mapErr(err)
 		}
 	}
 	return tx.Commit(ctx)

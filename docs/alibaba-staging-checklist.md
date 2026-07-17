@@ -103,15 +103,23 @@ After the stack reaches `CREATE_COMPLETE`:
      scripts/aliyun-control-smoke.sh proxymesh-staging
    ```
 
-3. Reach the private `ControlAPIDNSName:8080` through a VPN, bastion, or a
+3. Verify the public Shadowsocks data plane with a disposable canary:
+
+   ```bash
+   REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
+     DOCKER_BIN=/usr/local/bin/docker \
+     scripts/aliyun-data-plane-canary.sh proxymesh-staging
+   ```
+
+4. Reach the private `ControlAPIDNSName:8080` through a VPN, bastion, or a
    self-hosted GitHub runner in the VPC for all secret-bearing API calls.
    Route updates include upstream SOCKS5 passwords; do not encode those request
    bodies into ECS RunCommand/Cloud Assistant commands because command content
    is retained in cloud-side execution records.
-4. Create the canary device and assign a known-good SOCKS5 route.
-5. Update `RequireCanary=true` through a guarded ROS change set and perform one
+5. Create the canary device and assign a known-good SOCKS5 route.
+6. Update `RequireCanary=true` through a guarded ROS change set and perform one
    rolling Gateway replacement.
-6. Run the failure and load suites before creating the production stack.
+7. Run the failure and load suites before creating the production stack.
 
 The validated staging stack created on 2026-07-18 uses Resource Group
 `wucha_edm-sqd` (`rg-aeky5chnwj55sta`) and has these operator-facing outputs:

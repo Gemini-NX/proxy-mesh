@@ -18,6 +18,29 @@ Expected output:
 The script runs only non-mutating checks on the Control ECS. It deliberately
 does not accept request bodies, device passwords, or SOCKS5 credentials.
 
+## Verify the public data plane
+
+Run a full staging canary from an operator machine with Docker and Alibaba Cloud
+CLI access:
+
+```bash
+REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
+  DOCKER_BIN=/usr/local/bin/docker \
+  scripts/aliyun-data-plane-canary.sh proxymesh-staging
+```
+
+Expected output includes:
+
+```json
+{"dataPlane":"ok","gateways":2}
+```
+
+The script starts temporary authenticated SOCKS5 servers on the Gateway ECS
+instances, creates or rotates a disposable Shadowsocks canary device through the
+private Control API, then launches a local sing-box client and curls
+`example.com` through the public NLB. It removes the temporary SOCKS5 processes
+at exit.
+
 ## Onboard a real device
 
 1. Ensure the device-facing DNS name points at the public Gateway NLB.

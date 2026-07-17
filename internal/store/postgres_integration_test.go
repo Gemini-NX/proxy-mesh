@@ -63,6 +63,12 @@ func TestPostgresRouteEncryptionAndCAS(t *testing.T) {
 	if err = db.CreateDevice(ctx, model.Device{ID: deviceID, Username: deviceID, IngressPort: ingressPort, IngressMethod: "aes-256-gcm", IngressPassword: ingressPassword, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	if err = db.CreateDevice(ctx, model.Device{ID: deviceID, Username: deviceID, IngressPort: ingressPort + 20, IngressMethod: "aes-256-gcm", IngressPassword: ingressPassword, Enabled: true, CreatedAt: now, UpdatedAt: now}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected duplicate device id conflict, got %v", err)
+	}
+	if err = db.CreateDevice(ctx, model.Device{ID: deviceID + "-same-port", Username: deviceID + "-same-port", IngressPort: ingressPort, IngressMethod: "aes-256-gcm", IngressPassword: ingressPassword, Enabled: true, CreatedAt: now, UpdatedAt: now}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected duplicate ingress port conflict, got %v", err)
+	}
 	var ingressCiphertext []byte
 	if err = db.pool.QueryRow(ctx, `SELECT ingress_password_cipher FROM devices WHERE id=$1`, deviceID).Scan(&ingressCiphertext); err != nil {
 		t.Fatal(err)

@@ -231,6 +231,40 @@ func TestPreparedIngressRemainsInactiveUntilDeviceActivation(t *testing.T) {
 	}
 }
 
+func TestPrepareDeviceAllowsSameDeviceCredentialChange(t *testing.T) {
+	ingressPort := freePort(t)
+	oldIngress := model.DeviceIngress{Port: ingressPort, Method: "aes-256-gcm", Password: "old-device-pass", Primary: true}
+	newIngress := model.DeviceIngress{Port: ingressPort, Method: "aes-256-gcm", Password: "new-device-pass", Primary: true}
+	table := NewTable()
+	table.Load([]model.DeviceRoute{{DeviceID: "device-001", IngressPort: oldIngress.Port, IngressMethod: oldIngress.Method, IngressPassword: oldIngress.Password, Ingresses: []model.DeviceIngress{oldIngress}, Version: 1, Status: model.RouteActive}})
+	gateway := NewGateway(table, NewConnections(), time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	gateway.SetListenHost("127.0.0.1")
+	if err := gateway.ReconcileListeners(); err != nil {
+		t.Fatal(err)
+	}
+	defer gateway.CloseListeners()
+	oldListener := gateway.listeners[ingressPort]
+	proposed := model.Device{ID: "device-001", IngressPort: newIngress.Port, IngressMethod: newIngress.Method, IngressPassword: newIngress.Password, Ingresses: []model.DeviceIngress{newIngress}}
+	if err := gateway.PrepareDevice(proposed); err != nil {
+		t.Fatal(err)
+	}
+	if gateway.listeners[ingressPort] != oldListener {
+		t.Fatal("prepare should validate credential changes without replacing the active listener")
+	}
+	if err := table.UpdateDevice(proposed); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.ReconcileListeners(); err != nil {
+		t.Fatal(err)
+	}
+	if gateway.listeners[ingressPort] == oldListener {
+		t.Fatal("activation should replace the listener with the new credential")
+	}
+	if !gateway.listeners[ingressPort].active.Load() {
+		t.Fatal("replacement listener is not active")
+	}
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

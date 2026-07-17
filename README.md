@@ -99,6 +99,18 @@ REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
   scripts/aliyun-control-smoke.sh proxymesh-staging
 ```
 
+Run the full staging data-plane canary before handing the system to devices:
+
+```bash
+REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
+  DOCKER_BIN=/usr/local/bin/docker \
+  scripts/aliyun-data-plane-canary.sh proxymesh-staging
+```
+
+The canary uses a disposable Shadowsocks device and a temporary SOCKS5 upstream
+on the Gateway ECS instances, then verifies a real sing-box client can reach
+`example.com` through the public NLB.
+
 Do not pass SOCKS5 passwords or device Shadowsocks passwords through Cloud
 Assistant command content. Use the private Control API path for secret-bearing
 operations.
@@ -111,6 +123,7 @@ go vet ./...
 docker compose config
 REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/wait-ros-stack.sh proxymesh-staging
 REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/aliyun-control-smoke.sh proxymesh-staging
+REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/aliyun-data-plane-canary.sh proxymesh-staging
 ./tests/integration/ss2022/run.sh
 ```
 
