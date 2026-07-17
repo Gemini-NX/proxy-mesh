@@ -95,12 +95,37 @@ ALIYUN_PROFILE=hz scripts/create-ros-change-set.sh \
 After the stack reaches `CREATE_COMPLETE`:
 
 1. Add `proxy.example.com` as a CNAME to `NLBDNSName`.
-2. Reach the private `ControlAPIDNSName:8080` through a VPN, bastion, or a
-   self-hosted GitHub runner in the VPC.
-3. Create the canary device and assign a known-good SOCKS5 route.
-4. Update `RequireCanary=true` through a guarded ROS change set and perform one
+2. Verify the private Control Plane and the Gateway registration set without
+   sending secrets through Cloud Assistant command content:
+
+   ```bash
+   REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
+     scripts/aliyun-control-smoke.sh proxymesh-staging
+   ```
+
+3. Reach the private `ControlAPIDNSName:8080` through a VPN, bastion, or a
+   self-hosted GitHub runner in the VPC for all secret-bearing API calls.
+   Route updates include upstream SOCKS5 passwords; do not encode those request
+   bodies into ECS RunCommand/Cloud Assistant commands because command content
+   is retained in cloud-side execution records.
+4. Create the canary device and assign a known-good SOCKS5 route.
+5. Update `RequireCanary=true` through a guarded ROS change set and perform one
    rolling Gateway replacement.
-5. Run the failure and load suites before creating the production stack.
+6. Run the failure and load suites before creating the production stack.
+
+The validated staging stack created on 2026-07-18 uses Resource Group
+`wucha_edm-sqd` (`rg-aeky5chnwj55sta`) and has these operator-facing outputs:
+
+```text
+Gateway public NLB: nlb-o1j1jeu96kcsh5gzm5.cn-hongkong.nlb.aliyuncsslbintl.com
+Control private NLB: nlb-6evyw9iljszkc9ltfy.cn-hongkong.nlb.aliyuncsslbintl.com
+NAT EIP: 47.243.127.214
+PostgreSQL endpoint: pgm-j6c1800gkavvka3m.pg.cnhk.rds.aliyuncs.com
+Gateway ESS group: asg-j6c6h0zf9t0bmw6kblxo
+```
+
+Set `proxy-mesh.lintan-mob.com` as a CNAME to the Gateway public NLB before
+handing sing-box snippets to devices.
 
 Initial staging uses `GatewayDesiredCapacity=2` and
 `EnableAutoScaleOut=false`. Before migrating real device volume, raise the

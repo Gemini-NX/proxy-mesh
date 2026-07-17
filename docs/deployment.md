@@ -17,6 +17,17 @@
    remains pending until the lifecycle script observes `/ready=200`.
 6. Create a DNS CNAME from the public proxy hostname to the ROS `NLBDNSName` output.
 
+After creation, verify the private control path and the Gateway fleet from the
+Control ECS itself:
+
+```bash
+REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/aliyun-control-smoke.sh proxymesh-staging
+```
+
+This script is intentionally non-mutating. It reads the admin token on the
+Control ECS and checks `/live` plus `GET /v1/gateways`; it does not pass route
+credentials through Cloud Assistant.
+
 The template leaves environment name, application images, port range, source
 CIDR, image ID, instance type, and `NoEcho` bootstrap data as
 parameters. The production release
@@ -40,6 +51,11 @@ using encrypted local snapshots while it restarts. Horizontal Control Plane HA
 requires shared session/deployment coordination and is deferred; running two
 independent replicas would violate all-Gateway route activation semantics. The
 control API and gRPC NLB are private and gRPC uses mutual TLS.
+
+All secret-bearing admin operations, especially `PUT /v1/devices/{id}/route`,
+must be sent to the private Control API through VPC connectivity. Do not tunnel
+SOCKS5 passwords through ROS parameters, OOS metadata, ECS RunCommand content,
+or GitHub Actions logs.
 
 For the initial boot, leave `RequireCanary=false`, create the canary device and
 route, then enable the flag and roll the Gateways. See

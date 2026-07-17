@@ -77,12 +77,39 @@ expands. See the [deployment guide](docs/deployment.md), [Alibaba staging
 checklist](docs/alibaba-staging-checklist.md), and [operations
 runbook](docs/runbook.md).
 
+## Current Alibaba staging handoff
+
+The validated staging stack is `proxymesh-staging` in `cn-hongkong`, Resource
+Group `wucha_edm-sqd` (`rg-aeky5chnwj55sta`). It runs one private Control Plane
+ECS and two healthy Gateway ECS instances across Hong Kong Zone B/C.
+
+Point the device-facing DNS name at the public Gateway NLB:
+
+```text
+proxy-mesh.lintan-mob.com CNAME nlb-o1j1jeu96kcsh5gzm5.cn-hongkong.nlb.aliyuncsslbintl.com
+```
+
+The Control API NLB is intentionally private. Use a VPN, bastion, or self-hosted
+runner inside the VPC for device creation and route changes. For non-mutating
+cloud health checks from an operator machine with Alibaba Cloud permissions:
+
+```bash
+REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
+  scripts/aliyun-control-smoke.sh proxymesh-staging
+```
+
+Do not pass SOCKS5 passwords or device Shadowsocks passwords through Cloud
+Assistant command content. Use the private Control API path for secret-bearing
+operations.
+
 ## Verification
 
 ```bash
 go test ./...
 go vet ./...
 docker compose config
+REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/wait-ros-stack.sh proxymesh-staging
+REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/aliyun-control-smoke.sh proxymesh-staging
 ./tests/integration/ss2022/run.sh
 ```
 

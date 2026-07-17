@@ -1,5 +1,39 @@
 # Operations runbook
 
+## Health check the deployed Alibaba stack
+
+From an operator machine with Alibaba Cloud CLI access:
+
+```bash
+REGION=cn-hongkong ALIYUN_PROFILE=hz ALIYUN_BIN=/usr/local/bin/aliyun \
+  scripts/aliyun-control-smoke.sh proxymesh-staging
+```
+
+Expected output:
+
+```json
+{"control":"live","gateways":{"total":2,"ready":2}}
+```
+
+The script runs only non-mutating checks on the Control ECS. It deliberately
+does not accept request bodies, device passwords, or SOCKS5 credentials.
+
+## Onboard a real device
+
+1. Ensure the device-facing DNS name points at the public Gateway NLB.
+2. Connect to the private Control API through VPN, bastion, or a self-hosted
+   runner inside the VPC.
+3. Create/import the device Shadowsocks ingress. For existing sing-box configs,
+   use `scripts/import-singbox-device.sh` from inside that private network.
+4. Assign the upstream SOCKS5 route with the current `expectedVersion`.
+5. Confirm `GET /v1/devices/{deviceId}/status` shows the active route version.
+6. Restart or reload the local device's sing-box and test one new TCP request.
+
+Keep provider SOCKS5 passwords out of Cloud Assistant command content and CI
+logs. The Control API response returns device Shadowsocks passwords only at
+creation/rotation time; store the returned sing-box snippet in the device
+configuration system immediately.
+
 ## A Gateway is stuck
 
 1. Call `POST /v1/gateways/{gatewayId}/draining` with `{"draining":true}`. The Gateway acknowledges, `/ready:18080` becomes 503, and the node leaves route-publication quorum.
