@@ -26,6 +26,18 @@ does not accept request bodies, device passwords, or SOCKS5 credentials.
 3. Create/import the device Shadowsocks ingress. For existing sing-box configs,
    use `scripts/import-singbox-device.sh` from inside that private network.
 4. Assign the upstream SOCKS5 route with the current `expectedVersion`.
+   Store the request body in a local `0600` file and send it through the
+   private Control API:
+
+   ```bash
+   umask 077
+   printf '%s\n' \
+     '{"host":"socks.example.net","port":1080,"username":"user","password":"secret"}' \
+     >/private/tmp/device-001-route.json
+   DEVICE_ID=device-001 CONTROL_URL=http://control-private:8080 ADMIN_TOKEN=... \
+     scripts/put-device-route.sh 0 /private/tmp/device-001-route.json
+   ```
+
 5. Confirm `GET /v1/devices/{deviceId}/status` shows the active route version.
 6. Restart or reload the local device's sing-box and test one new TCP request.
 

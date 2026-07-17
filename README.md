@@ -57,10 +57,11 @@ verifying traffic, retire the legacy port with
 Assign its first route, using `expectedVersion: 0`:
 
 ```bash
-curl -sS -X PUT http://127.0.0.1:8080/v1/devices/device-001/route \
-  -H 'Authorization: Bearer local-admin-token' \
-  -H 'Content-Type: application/json' \
-  -d '{"host":"socks.example.net","port":1080,"username":"user","password":"secret","expectedVersion":0}'
+cat >/private/tmp/device-001-route.json <<'JSON'
+{"host":"socks.example.net","port":1080,"username":"user","password":"secret"}
+JSON
+DEVICE_ID=device-001 CONTROL_URL=http://127.0.0.1:8080 ADMIN_TOKEN=local-admin-token \
+  scripts/put-device-route.sh 0 /private/tmp/device-001-route.json
 ```
 
 The route request succeeds only after all currently connected Gateways acknowledge both phases. New connections use the new route; existing connections remain until they close or the interrupt API is called.
