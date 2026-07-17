@@ -130,3 +130,6 @@ REGION=cn-hongkong ALIYUN_PROFILE=hz scripts/aliyun-data-plane-canary.sh proxyme
 The OpenAPI contract is in `api/openapi/openapi.yaml`; the Gateway control contract is in `api/proto/control.proto`.
 
 See `docs/providers.md` for configuring supplier-specific SOCKS5 generation rules without putting supplier credentials in source code.
+
+For the current Alibaba Cloud handoff, see [docs/handoff.md](docs/handoff.md)
+and [docs/acceptance-report.md](docs/acceptance-report.md).
