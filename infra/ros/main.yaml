@@ -243,6 +243,7 @@ Resources:
       ServerGroupType: Instance
       Protocol: TCP
       AnyPortEnabled: true
+      PreserveClientIpEnabled: true
       Scheduler: rr
       ConnectionDrainEnabled: true
       ConnectionDrainTimeout: 600

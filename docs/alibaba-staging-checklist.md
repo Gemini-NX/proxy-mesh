@@ -7,7 +7,8 @@ capacity changes are automated by GitHub Actions after this bootstrap.
 ## Values the operator must provide
 
 - Two distinct `cn-hongkong` zone IDs that support the chosen ECS and RDS types.
-- A current Alibaba Cloud Linux 3 image ID and an available ECS instance type.
+- A current Ubuntu 24.04 LTS x86_64 or Alibaba Cloud Linux 3 image ID and an
+  available ECS instance type. Bootstrap supports both apt and yum/dnf systems.
 - An ACR registry/namespace containing the Gateway and Control Plane image digests.
 - The office public CIDR. Use a narrow `/32` or corporate NAT range; avoid the
   example default `0.0.0.0/0` in production.
