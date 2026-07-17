@@ -81,6 +81,7 @@ jobs:
       - name: Roll staging Gateways one at a time
         env:
           GATEWAY_SCALING_GROUP_ID: ${{ vars.GATEWAY_SCALING_GROUP_ID }}
+          MIN_GATEWAYS: 2
         run: scripts/rolling-replace-gateways.sh
 
   production:
@@ -122,4 +123,5 @@ jobs:
       - name: Add, ready, and drain one Gateway at a time
         env:
           GATEWAY_SCALING_GROUP_ID: ${{ vars.GATEWAY_SCALING_GROUP_ID }}
+          MIN_GATEWAYS: 4
         run: scripts/rolling-replace-gateways.sh

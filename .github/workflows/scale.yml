@@ -8,7 +8,7 @@ on:
         options: [staging, production]
         required: true
       desired_capacity:
-        description: Desired Gateway count (4-20)
+        description: Desired Gateway count (staging 2-20, production 4-20)
         type: number
         required: true
 permissions:
@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   scale:
-    if: ${{ inputs.desired_capacity >= 4 && inputs.desired_capacity <= 20 }}
+    if: ${{ inputs.desired_capacity <= 20 && ((inputs.environment == 'staging' && inputs.desired_capacity >= 2) || (inputs.environment == 'production' && inputs.desired_capacity >= 4)) }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:

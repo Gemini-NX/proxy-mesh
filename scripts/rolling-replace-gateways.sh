@@ -3,16 +3,17 @@ set -euo pipefail
 
 : "${REGION:?REGION is required}"
 : "${GATEWAY_SCALING_GROUP_ID:?GATEWAY_SCALING_GROUP_ID is required}"
+minimum="${MIN_GATEWAYS:-4}"
 
 group="$(aliyun ess DescribeScalingGroups --RegionId "$REGION" --ScalingGroupId.1 "$GATEWAY_SCALING_GROUP_ID")"
 desired="$(jq -r '.ScalingGroups.ScalingGroup[0].DesiredCapacity' <<<"$group")"
 maximum="$(jq -r '.ScalingGroups.ScalingGroup[0].MaxSize' <<<"$group")"
-[ "$desired" -ge 4 ] || { echo "desired capacity is below the safety floor" >&2; exit 1; }
+[ "$desired" -ge "$minimum" ] || { echo "desired capacity is below the safety floor ($minimum)" >&2; exit 1; }
 [ "$desired" -lt "$maximum" ] || { echo "rolling replacement needs one spare capacity slot" >&2; exit 1; }
 
 instances="$(aliyun ess DescribeScalingInstances --RegionId "$REGION" --ScalingGroupId "$GATEWAY_SCALING_GROUP_ID")"
 mapfile -t old_ids < <(jq -r '.ScalingInstances.ScalingInstance[] | select(.LifecycleState == "InService") | .InstanceId' <<<"$instances")
-[ "${#old_ids[@]}" -ge 3 ] || { echo "fewer than three in-service gateways" >&2; exit 1; }
+[ "${#old_ids[@]}" -ge "$minimum" ] || { echo "fewer than $minimum in-service gateways" >&2; exit 1; }
 
 wait_for_count() {
   local expected="$1"

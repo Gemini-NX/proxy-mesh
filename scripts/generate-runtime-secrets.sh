@@ -11,23 +11,26 @@ out="$1"
 umask 077
 mkdir -p "$out"
 
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$out/ca-key.pem"
+openssl genrsa -out "$out/ca-key.pem" 2048
 openssl req -x509 -new -sha256 -days 3650 -key "$out/ca-key.pem" \
-  -subj '/CN=ProxyMesh private CA' -out "$out/ca.pem"
+  -subj '/CN=ProxyMesh private CA' \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:1' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -out "$out/ca.pem"
 
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$out/control-server-key.pem"
+openssl genrsa -out "$out/control-server-key.pem" 2048
 openssl req -new -sha256 -key "$out/control-server-key.pem" \
   -subj "/CN=$2" -out "$out/control-server.csr"
-printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyAgreement' \
+printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
   'extendedKeyUsage=serverAuth' "subjectAltName=DNS:$2" > "$out/control-server.ext"
 openssl x509 -req -sha256 -days 825 -in "$out/control-server.csr" \
   -CA "$out/ca.pem" -CAkey "$out/ca-key.pem" -CAcreateserial \
   -extfile "$out/control-server.ext" -out "$out/control-server.pem"
 
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$out/gateway-client-key.pem"
+openssl genrsa -out "$out/gateway-client-key.pem" 2048
 openssl req -new -sha256 -key "$out/gateway-client-key.pem" \
   -subj '/CN=proxymesh-gateways' -out "$out/gateway-client.csr"
-printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyAgreement' \
+printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
   'extendedKeyUsage=clientAuth' > "$out/gateway-client.ext"
 openssl x509 -req -sha256 -days 825 -in "$out/gateway-client.csr" \
   -CA "$out/ca.pem" -CAkey "$out/ca-key.pem" -CAcreateserial \
@@ -35,6 +38,7 @@ openssl x509 -req -sha256 -days 825 -in "$out/gateway-client.csr" \
 
 encryption_key="$(openssl rand -base64 32)"
 admin_token="$(openssl rand -base64 48 | tr -d '\n')"
+printf 'Pm!9%s' "$(openssl rand -hex 14)" > "$out/database-password.txt"
 jq -n \
   --arg encryptionKey "$encryption_key" --arg adminToken "$admin_token" \
   --arg publicProxyHost "$3" --arg canaryDeviceId "$4" --arg controlTLSServerName "$2" \
@@ -47,3 +51,4 @@ jq -n \
 rm -f "$out"/*.csr "$out"/*.ext "$out"/*.srl
 echo "created protected runtime material in $out"
 echo "keep ca-key.pem offline; RUNTIME_SECRET_DATA is $out/runtime-secret.json"
+echo "DB_PASSWORD is stored in $out/database-password.txt"

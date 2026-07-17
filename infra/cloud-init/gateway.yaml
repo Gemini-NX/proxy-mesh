@@ -10,9 +10,8 @@ write_files:
     content: |
       IMAGE=__GATEWAY_IMAGE__
       CONTROL_GRPC_ADDR=__CONTROL_GRPC_ADDR__
-      KMS_SECRET_NAME=__KMS_SECRET_NAME__
-      REGISTRY_SECRET_NAME=__REGISTRY_SECRET_NAME__
-      RAM_ROLE_NAME=__GATEWAY_RAM_ROLE_NAME__
+      RUNTIME_SECRET_B64=__GATEWAY_RUNTIME_SECRET_B64__
+      REGISTRY_SECRET_B64=__REGISTRY_SECRET_B64__
       REQUIRE_CANARY=__REQUIRE_CANARY__
   - path: /opt/proxymesh/bin/start-gateway.sh
     owner: root:root
@@ -21,11 +20,10 @@ write_files:
       #!/usr/bin/env sh
       set -eu
       . /etc/proxymesh/bootstrap.env
-      aliyun configure set --profile default --mode EcsRamRole --ram-role-name "$RAM_ROLE_NAME" --region cn-hongkong >/dev/null
       install -d -m 0700 /run/proxymesh
       install -d -o 65532 -g 65532 -m 0700 /var/lib/proxymesh
-      SECRET_DATA="$(aliyun kms GetSecretValue --SecretName "$KMS_SECRET_NAME" | jq -r '.SecretData')"
-      REGISTRY_DATA="$(aliyun kms GetSecretValue --SecretName "$REGISTRY_SECRET_NAME" | jq -r '.SecretData')"
+      SECRET_DATA="$(printf '%s' "$RUNTIME_SECRET_B64" | base64 -d)"
+      REGISTRY_DATA="$(printf '%s' "$REGISTRY_SECRET_B64" | base64 -d)"
       umask 077
       printf '%s' "$SECRET_DATA" | jq -r '
         "ENCRYPTION_KEY=" + .encryptionKey,
@@ -40,21 +38,25 @@ write_files:
         printf '%s' "$SECRET_DATA" | jq -r '.controlServerCA' > /run/proxymesh/control-ca.pem
         printf '%s' "$SECRET_DATA" | jq -r '.gatewayClientCert' > /run/proxymesh/control-cert.pem
         printf '%s' "$SECRET_DATA" | jq -r '.gatewayClientKey' > /run/proxymesh/control-key.pem
-        chown 65532:65532 /run/proxymesh/control-ca.pem /run/proxymesh/control-cert.pem /run/proxymesh/control-key.pem
         printf '%s\n' \
           'CONTROL_TLS_CA=/run/proxymesh/control-ca.pem' \
           'CONTROL_TLS_CERT=/run/proxymesh/control-cert.pem' \
           'CONTROL_TLS_KEY=/run/proxymesh/control-key.pem' \
           >> /run/proxymesh/gateway.env
       fi
+      chown -R 65532:65532 /run/proxymesh
+      chmod 0700 /run/proxymesh
       unset SECRET_DATA
       registry_user="$(printf '%s' "$REGISTRY_DATA" | jq -r '.username')"
       registry_token="$(printf '%s' "$REGISTRY_DATA" | jq -r '.token')"
       registry="$(printf '%s' "$IMAGE" | cut -d/ -f1)"
+      cleanup_registry() { docker logout "$registry" >/dev/null 2>&1 || true; }
+      trap cleanup_registry EXIT INT TERM
       printf '%s' "$registry_token" | docker login "$registry" --username "$registry_user" --password-stdin
       unset REGISTRY_DATA registry_token
       docker pull "$IMAGE"
-      docker logout "$registry" >/dev/null 2>&1 || true
+      cleanup_registry
+      trap - EXIT INT TERM
       docker rm -f proxymesh-gateway 2>/dev/null || true
       exec docker run --name proxymesh-gateway --network host \
         --env-file /run/proxymesh/gateway.env \
@@ -131,7 +133,6 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
-  - /bin/bash -c "curl -fsSL https://aliyuncli.alicdn.com/install.sh | /bin/bash"
   - /opt/proxymesh/bin/install-docker.sh
   - systemctl enable --now docker
   - systemctl daemon-reload

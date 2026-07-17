@@ -14,7 +14,7 @@ capacity changes are automated by GitHub Actions after this bootstrap.
   `ghcr.io/gemini-nx/proxy-mesh-control-plane`.
 - A dedicated GitHub PAT classic with only the access required to read those
   packages. Export its owner as `GHCR_USERNAME` and token as `GHCR_TOKEN`; the
-  parameter builder stores them in an environment-scoped KMS secret.
+  parameter builder Base64-encodes them into a ROS `NoEcho` parameter.
 - The device source CIDR. When mainland carrier NAT addresses change frequently,
   use `0.0.0.0/0`; access then relies on per-device Shadowsocks credentials and
   unknown ports remain closed on every Gateway.
@@ -40,6 +40,7 @@ For staging, generate correctly scoped material with:
 scripts/generate-runtime-secrets.sh /private/tmp/proxymesh-staging-secrets \
   control.internal proxy.example.com canary-001
 export RUNTIME_SECRET_DATA="$(cat /private/tmp/proxymesh-staging-secrets/runtime-secret.json)"
+export DB_PASSWORD="$(cat /private/tmp/proxymesh-staging-secrets/database-password.txt)"
 export GHCR_USERNAME="your-github-token-owner"
 read -r -s GHCR_TOKEN && export GHCR_TOKEN
 ```
@@ -47,13 +48,20 @@ read -r -s GHCR_TOKEN && export GHCR_TOKEN
 Keep `ca-key.pem` offline and do not reuse staging certificates or tokens in
 production.
 
+The initial Hong Kong staging environment uses VPC `vpc-j6cpr1r4ypbtwsq176yc6`
+with CIDR `172.16.0.0/16`, Zone B vSwitch
+`vsw-j6cbdz8nh1gawb7rxijz5`, and Zone C vSwitch
+`vsw-j6cnpdya6z622y4vnemmr`.
+
 ## Account preparation
 
-1. Enable ROS, ECS, ESS, NLB, NAT Gateway/EIP, RDS PostgreSQL, KMS, OOS,
+1. Enable ROS, ECS, ESS, NLB, NAT Gateway/EIP, RDS PostgreSQL, OOS,
    Cloud Assistant, SLS and CloudMonitor in `cn-hongkong`.
-2. Confirm quota for one public and one private NLB, four Gateway ECS instances,
+2. Confirm quota for one public and one private NLB, two initial Gateway ECS instances,
    one Control Plane ECS instance, an ESS maximum of 20, one NAT Gateway/EIP,
-   and one multi-zone RDS instance.
+   and one multi-zone RDS instance. The public dual-zone NLB consumes two EIPs
+   and the NAT Gateway consumes one, so the EIP quota must be at least the
+   account's current usage plus three (`eip` quota `q_6arozx`).
 3. Create a PAT classic with `read:packages`, authorize it for the organization
    if SSO is enforced, and keep the two GHCR packages private.
 4. Configure GitHub OIDC trust and the release RAM role, restricted to this
@@ -68,10 +76,21 @@ scripts/build-ros-parameters.sh /private/tmp/proxymesh-staging-parameters.json
 aliyun ros ValidateTemplate --RegionId cn-hongkong --TemplateBody "$(cat infra/ros/main.yaml)"
 ```
 
-Create a ROS change set of type `CREATE` using `infra/ros/main.yaml` and the
-generated parameter file, inspect it in the ROS console, then execute it. Keep
+Create a ROS change set of type `CREATE` using `infra/ros/main.yaml`,
+`infra/ros/stack-policy.json`, and the generated parameter file. Inspect it in
+the ROS console, then execute it. The stack policy prevents normal updates from
+deleting or replacing either NLB or PostgreSQL. Keep
 `RequireCanary=false` for this first creation: otherwise the first Gateways
 cannot become ready before the canary device exists.
+
+For Alibaba Cloud CLI 3.0.x, use the compatibility wrapper so repeated ROS
+parameters are encoded correctly without printing secret values:
+
+```bash
+ALIYUN_PROFILE=hz scripts/create-ros-change-set.sh \
+  proxymesh-staging initial-staging-YYYYMMDD \
+  /private/tmp/proxymesh-staging-parameters.json
+```
 
 After the stack reaches `CREATE_COMPLETE`:
 
@@ -83,8 +102,15 @@ After the stack reaches `CREATE_COMPLETE`:
    rolling Gateway replacement.
 5. Run the failure and load suites before creating the production stack.
 
+Initial staging uses `GatewayDesiredCapacity=2` and
+`EnableAutoScaleOut=false`. Before migrating real device volume, raise the
+desired capacity to at least 4 and explicitly enable automatic scale-out.
+
 Delete the generated parameter JSON after the stack is created. It contains
-bootstrap secrets even though its file mode is `0600`.
+bootstrap secrets even though its file mode is `0600` and ROS marks the
+corresponding parameters `NoEcho`. Base64 does not encrypt those values. The
+same bootstrap values remain available to the ECS root user so services can
+restart and newly scaled Gateway instances can authenticate to private GHCR.
 
 ## GitHub Environment values
 

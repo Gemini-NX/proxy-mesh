@@ -13,7 +13,7 @@ Read the current route version, then submit the new credential with that `expect
 
 ## Scale out and in
 
-Scale out through the manual GitHub workflow or ROS parameter. New instances complete the Pending Add hook only after readiness. Scale in first sets DRAINING, waits for active connections to reach zero, and forcibly continues after ten minutes. Keep at least three healthy Gateways during releases.
+Scale out through the manual GitHub workflow or ROS parameter. New instances complete the Pending Add hook only after readiness. Scale in first sets DRAINING, waits for active connections to reach zero, and forcibly continues after ten minutes. Staging may run two Gateways for validation; production keeps at least four, and rolling replacement adds a ready spare before draining an old node.
 
 Automatic scale-out should alert on active connections, network bandwidth, file-descriptor utilization, and CPU. Automatic scale-in is disabled for phase one.
 

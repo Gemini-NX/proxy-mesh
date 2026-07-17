@@ -69,7 +69,13 @@ The route request succeeds only after all currently connected Gateways acknowled
 
 Control Plane requires `DATABASE_URL`, `ENCRYPTION_KEY`, and `ADMIN_TOKEN`. Gateway requires `CONTROL_GRPC_ADDR`, `SNAPSHOT_KEY` (or `ENCRYPTION_KEY`), and a writable `SNAPSHOT_PATH`. Production should additionally configure mutual TLS through the `GRPC_TLS_*` and `CONTROL_TLS_*` variables and set `REQUIRE_CANARY=true` with `CANARY_DEVICE_ID`.
 
-Secrets are injected at runtime from KMS; they must not be committed or placed in ROS outputs. See the [deployment guide](docs/deployment.md), [Alibaba staging checklist](docs/alibaba-staging-checklist.md), and [operations runbook](docs/runbook.md).
+Phase one injects secrets through ROS `NoEcho` parameters and stores bootstrap
+material only in root-owned `0600` files on ECS. Base64 transport is not
+encryption: limit ROS/ECS administrator access, never commit generated parameter
+files, and migrate to a dedicated secret manager when the operator boundary
+expands. See the [deployment guide](docs/deployment.md), [Alibaba staging
+checklist](docs/alibaba-staging-checklist.md), and [operations
+runbook](docs/runbook.md).
 
 ## Verification
 

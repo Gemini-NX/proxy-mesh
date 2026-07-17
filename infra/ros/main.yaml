@@ -17,6 +17,7 @@ Parameters:
     Description: Existing cn-hongkong VPC ID.
   ExistingVpcCidr:
     Type: String
+    Default: 172.16.0.0/16
     Description: CIDR of the existing VPC, used for private control-plane access.
   ExistingVSwitchIdA:
     Type: String
@@ -24,6 +25,14 @@ Parameters:
   ExistingVSwitchIdB:
     Type: String
     Description: Existing vSwitch ID in ZoneIdB.
+  ExistingVSwitchCidrA:
+    Type: String
+    Default: 172.16.0.0/24
+    Description: CIDR of ExistingVSwitchIdA, used by the NAT Gateway SNAT entry.
+  ExistingVSwitchCidrB:
+    Type: String
+    Default: 172.16.16.0/24
+    Description: CIDR of ExistingVSwitchIdB, used by the NAT Gateway SNAT entry.
   ECSImageId:
     Type: String
   ECSInstanceType:
@@ -57,9 +66,14 @@ Parameters:
     MaxValue: 65535
   GatewayDesiredCapacity:
     Type: Number
-    Default: 4
-    MinValue: 4
+    Default: 2
+    MinValue: 2
     MaxValue: 20
+  EnableAutoScaleOut:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable CPU target-tracking scale-out after staging validation.
   RequireCanary:
     Type: String
     Default: 'false'
@@ -67,23 +81,26 @@ Parameters:
     Description: Enable only after the canary device and SOCKS5 route exist.
   DBInstanceClass:
     Type: String
-    Default: pg.n2.2c.1m
+    Default: pg.x2m.medium.2c
   DBPassword:
     Type: String
     NoEcho: true
     MinLength: 16
-  GatewayRuntimeSecretData:
+    MaxLength: 32
+  GatewayRuntimeSecretB64:
     Type: String
     NoEcho: true
-    Description: Gateway-only JSON containing snapshot key, canary and mTLS client material.
-  ControlRuntimeSecretData:
+    Description: Base64-encoded Gateway runtime JSON containing snapshot key, canary and mTLS client material.
+  ControlRuntimeSecretB64:
     Type: String
     NoEcho: true
-    Description: Control-only JSON containing encryption key, admin token and mTLS server material.
-  RegistrySecretData:
+    Description: Base64-encoded Control runtime JSON containing encryption key, admin token and mTLS server material.
+  RegistrySecretB64:
     Type: String
     NoEcho: true
-    Description: JSON containing a GHCR username and read:packages token.
+    Description: Base64-encoded JSON containing a GHCR username and read:packages token.
+Conditions:
+  AutoScaleOutEnabled: {'Fn::Equals': [{Ref: EnableAutoScaleOut}, 'true']}
 Resources:
   GatewaySecurityGroup:
     Type: ALIYUN::ECS::SecurityGroup
@@ -98,6 +115,17 @@ Resources:
       IpProtocol: tcp
       PortRange: {'Fn::Join': ['', [{Ref: DevicePortStart}, '/', {Ref: DevicePortEnd}]]}
       SourceCidrIp: {Ref: DeviceSourceCidr}
+  GatewayEgress:
+    Type: ALIYUN::ECS::SecurityGroupEgress
+    Properties:
+      SecurityGroupId: {Ref: GatewaySecurityGroup}
+      IpProtocol: all
+      PortRange: -1/-1
+      DestCidrIp: 0.0.0.0/0
+      NicType: intranet
+      Policy: accept
+      Priority: 1
+      Description: ProxyMesh Gateway outbound proxy and control traffic
   GatewayHealthIngress:
     Type: ALIYUN::ECS::SecurityGroupIngress
     Properties:
@@ -105,71 +133,6 @@ Resources:
       IpProtocol: tcp
       PortRange: 18080/18080
       SourceCidrIp: {Ref: ExistingVpcCidr}
-  GatewayRuntimeSecret:
-    Type: ALIYUN::KMS::Secret
-    Properties:
-      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/gateway-runtime'}
-      VersionId: v1
-      SecretData: {Ref: GatewayRuntimeSecretData}
-  ControlRuntimeSecret:
-    Type: ALIYUN::KMS::Secret
-    Properties:
-      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/control-runtime'}
-      VersionId: v1
-      SecretData: {Ref: ControlRuntimeSecretData}
-  DatabaseSecret:
-    Type: ALIYUN::KMS::Secret
-    Properties:
-      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/database'}
-      VersionId: v1
-      SecretData: {'Fn::Join': ['', ['{"username":"proxymesh","password":"', {Ref: DBPassword}, '"}']]}
-  RegistrySecret:
-    Type: ALIYUN::KMS::Secret
-    Properties:
-      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/registry'}
-      VersionId: v1
-      SecretData: {Ref: RegistrySecretData}
-  GatewayRAMRole:
-    Type: ALIYUN::RAM::Role
-    Properties:
-      RoleName: {'Fn::Sub': 'proxymesh-${EnvironmentName}-gateway'}
-      AssumeRolePolicyDocument:
-        Version: '1'
-        Statement:
-          - Effect: Allow
-            Principal: {Service: [ecs.aliyuncs.com]}
-            Action: ['sts:AssumeRole']
-      Policies:
-        - PolicyName: proxymesh-gateway-runtime
-          PolicyDocument:
-            Version: '1'
-            Statement:
-              - Effect: Allow
-                Action: ['kms:GetSecretValue']
-                Resource:
-                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/gateway-runtime'}
-                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/registry'}
-  ControlRAMRole:
-    Type: ALIYUN::RAM::Role
-    Properties:
-      RoleName: {'Fn::Sub': 'proxymesh-${EnvironmentName}-control'}
-      AssumeRolePolicyDocument:
-        Version: '1'
-        Statement:
-          - Effect: Allow
-            Principal: {Service: [ecs.aliyuncs.com]}
-            Action: ['sts:AssumeRole']
-      Policies:
-        - PolicyName: proxymesh-control-runtime
-          PolicyDocument:
-            Version: '1'
-            Statement:
-              - Effect: Allow
-                Action: ['kms:GetSecretValue']
-                Resource:
-                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/control-runtime'}
-                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/database'}
-                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/registry'}
   OOSLifecycleRole:
     Type: ALIYUN::RAM::Role
     Properties:
@@ -179,15 +142,53 @@ Resources:
         Statement:
           - Effect: Allow
             Principal: {Service: [oos.aliyuncs.com]}
-            Action: ['sts:AssumeRole']
+            Action: sts:AssumeRole
       Policies:
-        - PolicyName: proxymesh-oos-lifecycle
+        - PolicyName: proxymesh-oos-lifecycle-inline
           PolicyDocument:
             Version: '1'
             Statement:
               - Effect: Allow
-                Action: ['ecs:DescribeInvocationResults', 'ecs:DescribeInvocations', 'ecs:RunCommand', 'ess:CompleteLifecycleAction']
-                Resource: '*'
+                Action: ['ecs:DescribeInvocationResults', 'ecs:DescribeInvocations', 'ecs:RunCommand']
+                Resource: ['*']
+              - Effect: Allow
+                Action: ['ess:CompleteLifecycleAction']
+                Resource: ['*']
+  OOSLifecycleManagedPolicy:
+    Type: ALIYUN::RAM::ManagedPolicy
+    Properties:
+      PolicyName: proxymesh-oos-lifecycle
+      Description: ProxyMesh OOS lifecycle hook command permissions
+      PolicyDocument:
+        Version: '1'
+        Statement:
+          - Effect: Allow
+            Action: ['ecs:DescribeInvocationResults', 'ecs:DescribeInvocations', 'ecs:RunCommand']
+            Resource: ['*']
+          - Effect: Allow
+            Action: ['ess:CompleteLifecycleAction']
+            Resource: ['*']
+  OOSLifecycleResourceGroupPolicy:
+    Type: ALIYUN::ResourceManager::PolicyAttachment
+    DependsOn: [OOSLifecycleRole, OOSLifecycleManagedPolicy]
+    Properties:
+      PolicyName: proxymesh-oos-lifecycle
+      PolicyType: Custom
+      PrincipalType: ServiceRole
+      PrincipalName:
+        Fn::Join:
+          - ''
+          - - {'Fn::GetAtt': [OOSLifecycleRole, RoleName]}
+            - '@role.'
+            - {Ref: 'ALIYUN::TenantId'}
+            - .onaliyunservice.com
+      ResourceGroupId: {Ref: 'ALIYUN::ResourceGroupId'}
+  OOSRolePropagationDelay:
+    Type: ALIYUN::ROS::Sleep
+    DependsOn: OOSLifecycleResourceGroupPolicy
+    Properties:
+      CreateDuration: 300
+      DeleteDuration: 0
   EIP:
     Type: ALIYUN::VPC::EIP
     Properties:
@@ -211,14 +212,14 @@ Resources:
     DependsOn: EIPAssociation
     Properties:
       SnatTableId: {'Fn::GetAtt': [NATGateway, SNatTableId]}
-      SourceVSwitchId: {Ref: ExistingVSwitchIdA}
+      SourceCIDR: {Ref: ExistingVSwitchCidrA}
       SnatIp: {'Fn::GetAtt': [EIP, EipAddress]}
   SNATEntryB:
     Type: ALIYUN::VPC::SnatEntry
     DependsOn: EIPAssociation
     Properties:
       SnatTableId: {'Fn::GetAtt': [NATGateway, SNatTableId]}
-      SourceVSwitchId: {Ref: ExistingVSwitchIdB}
+      SourceCIDR: {Ref: ExistingVSwitchCidrB}
       SnatIp: {'Fn::GetAtt': [EIP, EipAddress]}
   NLB:
     Type: ALIYUN::NLB::LoadBalancer
@@ -228,7 +229,6 @@ Resources:
       AddressType: Internet
       AddressIpVersion: Ipv4
       CrossZoneEnabled: true
-      DeletionProtectionEnabled: true
       ModificationProtectionConfig: {Status: ConsoleProtection}
       ZoneMappings:
         - ZoneId: {Ref: ZoneIdA}
@@ -244,7 +244,7 @@ Resources:
       Protocol: TCP
       AnyPortEnabled: true
       PreserveClientIpEnabled: true
-      Scheduler: rr
+      Scheduler: Rr
       ConnectionDrainEnabled: true
       ConnectionDrainTimeout: 600
       HealthCheckConfig:
@@ -264,7 +264,7 @@ Resources:
       LoadBalancerId: {Ref: NLB}
       ServerGroupId: {Ref: NLBServerGroup}
       ListenerProtocol: TCP
-      ListenerPort: 1
+      ListenerPort: 0
       StartPort: 1
       EndPort: 65535
       IdleTimeout: 60
@@ -273,7 +273,7 @@ Resources:
     Type: ALIYUN::ESS::ScalingGroup
     Properties:
       ScalingGroupName: proxymesh-gateway
-      MinSize: 4
+      MinSize: 2
       MaxSize: 20
       DesiredCapacity: {Ref: GatewayDesiredCapacity}
       VSwitchIds: [{Ref: ExistingVSwitchIdA}, {Ref: ExistingVSwitchIdB}]
@@ -288,7 +288,6 @@ Resources:
       ImageId: {Ref: ECSImageId}
       InstanceType: {Ref: ECSInstanceType}
       SecurityGroupId: {Ref: GatewaySecurityGroup}
-      RamRoleName: {'Fn::GetAtt': [GatewayRAMRole, RoleName]}
       InternetMaxBandwidthOut: 0
       SystemDiskCategory: cloud_essd
       SystemDiskSize: 40
@@ -297,9 +296,8 @@ Resources:
           - __CONTROL_GRPC_ADDR__:
               Fn::Join: ['', [{'Fn::GetAtt': [ControlNLB, DNSName]}, ':9090']]
             __REQUIRE_CANARY__: {Ref: RequireCanary}
-            __KMS_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/gateway-runtime'}
-            __REGISTRY_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/registry'}
-            __GATEWAY_RAM_ROLE_NAME__: {'Fn::GetAtt': [GatewayRAMRole, RoleName]}
+            __GATEWAY_RUNTIME_SECRET_B64__: {Ref: GatewayRuntimeSecretB64}
+            __REGISTRY_SECRET_B64__: {Ref: RegistrySecretB64}
           - {Ref: GatewayUserData}
   GatewayServerGroupAttachment:
     Type: ALIYUN::ESS::ServerGroupAttachment
@@ -316,10 +314,23 @@ Resources:
       ScalingGroupId: {Ref: GatewayScalingGroup}
       LifecycleHookName: proxymesh-scale-out-ready
       LifecycleTransition: SCALE_OUT
-      HeartbeatTimeout: 600
+      HeartbeatTimeout: 1800
       DefaultResult: ABANDON
       NotificationArn: {'Fn::Sub': 'acs:ess:${ALIYUN::Region}:${ALIYUN::TenantId}:oos/ACS-ESS-LifeCycleRunCommand'}
-      NotificationMetadata: {'Fn::Sub': '{"commandContent":"i=0; until [ -x /opt/proxymesh/bin/lifecycle-scale-out.sh ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1; sleep 5; done; exec /opt/proxymesh/bin/lifecycle-scale-out.sh","commandType":"RunShellScript","timeout":600,"lifecycleActionResult":"ABANDON","OOSAssumeRole":"${OOSLifecycleRole.RoleName}"}'}
+      NotificationMetadata:
+        Fn::Sub: |-
+          {
+            "commandContent": "i=0; until [ -x /opt/proxymesh/bin/lifecycle-scale-out.sh ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1; sleep 5; done; exec /opt/proxymesh/bin/lifecycle-scale-out.sh",
+            "commandType": "RunShellScript",
+            "timeout": 1800,
+            "lifecycleActionResult": "ABANDON",
+            "OOSAssumeRole": "${OOSLifecycleRole.RoleName}",
+            "regionId": "${!regionId}",
+            "instanceIds": "${!instanceIds}",
+            "lifecycleHookId": "${!lifecycleHookId}",
+            "rateControl": "{\"Mode\":\"Concurrency\",\"MaxErrors\":0,\"Concurrency\":10}",
+            "lifecycleActionToken": "${!lifecycleActionToken}"
+          }
   ScaleInLifecycleHook:
     Type: ALIYUN::ESS::LifecycleHook
     Properties:
@@ -329,15 +340,29 @@ Resources:
       HeartbeatTimeout: 600
       DefaultResult: CONTINUE
       NotificationArn: {'Fn::Sub': 'acs:ess:${ALIYUN::Region}:${ALIYUN::TenantId}:oos/ACS-ESS-LifeCycleRunCommand'}
-      NotificationMetadata: {'Fn::Sub': '{"commandContent":"i=0; until [ -x /opt/proxymesh/bin/lifecycle-scale-in.sh ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1; sleep 5; done; exec /opt/proxymesh/bin/lifecycle-scale-in.sh","commandType":"RunShellScript","timeout":600,"lifecycleActionResult":"CONTINUE","OOSAssumeRole":"${OOSLifecycleRole.RoleName}"}'}
+      NotificationMetadata:
+        Fn::Sub: |-
+          {
+            "commandContent": "i=0; until [ -x /opt/proxymesh/bin/lifecycle-scale-in.sh ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1; sleep 5; done; exec /opt/proxymesh/bin/lifecycle-scale-in.sh",
+            "commandType": "RunShellScript",
+            "timeout": 600,
+            "lifecycleActionResult": "CONTINUE",
+            "OOSAssumeRole": "${OOSLifecycleRole.RoleName}",
+            "regionId": "${!regionId}",
+            "instanceIds": "${!instanceIds}",
+            "lifecycleHookId": "${!lifecycleHookId}",
+            "rateControl": "{\"Mode\":\"Concurrency\",\"MaxErrors\":0,\"Concurrency\":10}",
+            "lifecycleActionToken": "${!lifecycleActionToken}"
+          }
   GatewayScalingGroupEnable:
     Type: ALIYUN::ESS::ScalingGroupEnable
-    DependsOn: [GatewayScalingConfiguration, GatewayServerGroupAttachment, ScaleOutLifecycleHook, ScaleInLifecycleHook, GatewayRuntimeSecret, RegistrySecret, SNATEntryA, SNATEntryB]
+    DependsOn: [GatewayScalingConfiguration, GatewayServerGroupAttachment, GatewayEgress, ScaleOutLifecycleHook, ScaleInLifecycleHook, OOSRolePropagationDelay, SNATEntryA, SNATEntryB]
     Properties:
       ScalingGroupId: {Ref: GatewayScalingGroup}
       ScalingConfigurationId: {Ref: GatewayScalingConfiguration}
   CPUScaleOutRule:
     Type: ALIYUN::ESS::ScalingRule
+    Condition: AutoScaleOutEnabled
     Properties:
       ScalingGroupId: {Ref: GatewayScalingGroup}
       ScalingRuleName: proxymesh-cpu-scale-out
@@ -351,12 +376,12 @@ Resources:
     Type: ALIYUN::RDS::DBInstance
     Properties:
       Engine: PostgreSQL
-      EngineVersion: '17.0'
+      EngineVersion: '15.0'
       DBInstanceClass: {Ref: DBInstanceClass}
       DBInstanceStorage: 100
       DBInstanceStorageType: cloud_essd
-      Category: HighAvailability
-      MultiAZ: true
+      Category: Basic
+      MultiAZ: false
       VpcId: {Ref: ExistingVpcId}
       VSwitchId: {Ref: ExistingVSwitchIdA}
       SecurityIPList: {Ref: ExistingVpcCidr}
@@ -372,6 +397,17 @@ Resources:
       VpcId: {Ref: ExistingVpcId}
       SecurityGroupName: proxymesh-control-plane
       SecurityGroupType: enterprise
+  ControlEgress:
+    Type: ALIYUN::ECS::SecurityGroupEgress
+    Properties:
+      SecurityGroupId: {Ref: ControlSecurityGroup}
+      IpProtocol: all
+      PortRange: -1/-1
+      DestCidrIp: 0.0.0.0/0
+      NicType: intranet
+      Policy: accept
+      Priority: 1
+      Description: ProxyMesh Control Plane database registry and cloud traffic
   ControlAPIIngress:
     Type: ALIYUN::ECS::SecurityGroupIngress
     Properties:
@@ -388,7 +424,7 @@ Resources:
       SourceCidrIp: {Ref: ExistingVpcCidr}
   ControlInstance:
     Type: ALIYUN::ECS::Instance
-    DependsOn: [PostgreSQL, ControlRuntimeSecret, DatabaseSecret, RegistrySecret, SNATEntryA]
+    DependsOn: [PostgreSQL, SNATEntryA, ControlEgress]
     Properties:
       InstanceName: proxymesh-control-plane
       ImageId: {Ref: ECSImageId}
@@ -396,17 +432,14 @@ Resources:
       VpcId: {Ref: ExistingVpcId}
       VSwitchId: {Ref: ExistingVSwitchIdA}
       SecurityGroupId: {Ref: ControlSecurityGroup}
-      RamRoleName: {'Fn::GetAtt': [ControlRAMRole, RoleName]}
       InternetMaxBandwidthOut: 0
       SystemDiskCategory: cloud_essd
       SystemDiskSize: 40
       UserData:
         Fn::Replace:
           - __DATABASE_HOST__: {'Fn::GetAtt': [PostgreSQL, InnerConnectionString]}
-            __DATABASE_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/database'}
-            __RUNTIME_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/control-runtime'}
-            __REGISTRY_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/registry'}
-            __CONTROL_RAM_ROLE_NAME__: {'Fn::GetAtt': [ControlRAMRole, RoleName]}
+            __CONTROL_RUNTIME_SECRET_B64__: {Ref: ControlRuntimeSecretB64}
+            __REGISTRY_SECRET_B64__: {Ref: RegistrySecretB64}
           - {Ref: ControlUserData}
   ControlNLB:
     Type: ALIYUN::NLB::LoadBalancer
@@ -416,7 +449,6 @@ Resources:
       AddressType: Intranet
       AddressIpVersion: Ipv4
       CrossZoneEnabled: true
-      DeletionProtectionEnabled: true
       ZoneMappings:
         - ZoneId: {Ref: ZoneIdA}
           VSwitchId: {Ref: ExistingVSwitchIdA}
@@ -505,14 +537,17 @@ Resources:
             - {Ref: ControlImage}
             - |-
               |' /etc/proxymesh/control-bootstrap.env
-              systemctl restart proxymesh-control-plane
+              EXPECTED_GATEWAYS=
+            - {Ref: GatewayDesiredCapacity}
+            - |-
+              ; systemctl restart proxymesh-control-plane
               i=0
               until curl -fsS http://127.0.0.1:8080/live >/dev/null; do
                 i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5
               done
               ADMIN_TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' /run/proxymesh/control.env)"
               i=0
-              until curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8080/v1/gateways | jq -e 'length >= 3' >/dev/null; do
+              until curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8080/v1/gateways | jq -e --argjson expected "$EXPECTED_GATEWAYS" 'length >= $expected' >/dev/null; do
                 i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5
               done
   LogProject:
