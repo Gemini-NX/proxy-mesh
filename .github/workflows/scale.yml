@@ -48,7 +48,9 @@ jobs:
             [[ "$status" == *FAILED ]] && exit 1
             sleep 5
           done
+          test "$status" = CREATE_COMPLETE
           scripts/guard-change-set.sh change-set.json
           changed="$(jq -r '[.Changes[]? | (.ResourceChange // .).LogicalResourceId] | unique | join(",")' change-set.json)"
           test "$changed" = "GatewayScalingGroup" || { echo "unexpected resources: $changed" >&2; exit 1; }
           aliyun ros ExecuteChangeSet --RegionId "$REGION" --ChangeSetId "$id"
+          scripts/wait-ros-stack.sh "$STACK"

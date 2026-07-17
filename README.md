@@ -69,7 +69,7 @@ The route request succeeds only after all currently connected Gateways acknowled
 
 Control Plane requires `DATABASE_URL`, `ENCRYPTION_KEY`, and `ADMIN_TOKEN`. Gateway requires `CONTROL_GRPC_ADDR`, `SNAPSHOT_KEY` (or `ENCRYPTION_KEY`), and a writable `SNAPSHOT_PATH`. Production should additionally configure mutual TLS through the `GRPC_TLS_*` and `CONTROL_TLS_*` variables and set `REQUIRE_CANARY=true` with `CANARY_DEVICE_ID`.
 
-Secrets are injected at runtime from KMS; they must not be committed or placed in ROS outputs. See [deployment guide](docs/deployment.md) and [operations runbook](docs/runbook.md).
+Secrets are injected at runtime from KMS; they must not be committed or placed in ROS outputs. See the [deployment guide](docs/deployment.md), [Alibaba staging checklist](docs/alibaba-staging-checklist.md), and [operations runbook](docs/runbook.md).
 
 ## Verification
 

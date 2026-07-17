@@ -6,7 +6,7 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 
-critical='^(NLB|PostgreSQL|RuntimeSecret)$'
+critical='^(NLB|ControlNLB|PostgreSQL|GatewayRuntimeSecret|ControlRuntimeSecret|DatabaseSecret)$'
 unsafe="$(jq -r --arg critical "$critical" '
   [(.Changes // .ResourceChanges // [])[]
    | (.ResourceChange // .) as $c

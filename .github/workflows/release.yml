@@ -72,11 +72,12 @@ jobs:
         env:
           STACK: ${{ vars.ROS_STACK_NAME }}
           GATEWAY_IMAGE: ${{ needs.build.outputs.gateway_image }}
-          CONTROL_GRPC_ADDR: ${{ vars.CONTROL_GRPC_ADDR }}
+          CONTROL_IMAGE: ${{ needs.build.outputs.control_image }}
         shell: bash
         run: |
-          cloud_init="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE" "$CONTROL_GRPC_ADDR" proxymesh/runtime)"
-          parameters="$(jq -nc --arg image "$GATEWAY_IMAGE" --arg userData "$cloud_init" '[{ParameterKey:"GatewayImage",ParameterValue:$image},{ParameterKey:"GatewayUserData",ParameterValue:$userData}]')"
+          gateway_user_data="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE")"
+          control_user_data="$(scripts/render-control-cloud-init.sh "$CONTROL_IMAGE")"
+          parameters="$(jq -nc --arg gatewayImage "$GATEWAY_IMAGE" --arg gatewayUserData "$gateway_user_data" --arg controlImage "$CONTROL_IMAGE" --arg controlUserData "$control_user_data" '[{ParameterKey:"GatewayImage",ParameterValue:$gatewayImage},{ParameterKey:"GatewayUserData",ParameterValue:$gatewayUserData},{ParameterKey:"ControlImage",ParameterValue:$controlImage},{ParameterKey:"ControlUserData",ParameterValue:$controlUserData}]')"
           name="release-${GITHUB_RUN_ID}-staging"
           response="$(aliyun ros CreateChangeSet --RegionId "$REGION" --StackName "$STACK" --ChangeSetName "$name" --ChangeSetType UPDATE --Parameters "$parameters")"
           id="$(jq -r '.ChangeSetId' <<<"$response")"
@@ -87,13 +88,14 @@ jobs:
             [[ "$status" == *FAILED ]] && exit 1
             sleep 5
           done
+          test "$status" = CREATE_COMPLETE
           scripts/guard-change-set.sh change-set.json
           aliyun ros ExecuteChangeSet --RegionId "$REGION" --ChangeSetId "$id"
-      - name: Smoke test
+          scripts/wait-ros-stack.sh "$STACK"
+      - name: Roll staging Gateways one at a time
         env:
-          CONTROL_URL: ${{ vars.CONTROL_URL }}
-          ADMIN_TOKEN: ${{ secrets.SMOKE_ADMIN_TOKEN }}
-        run: tests/integration/smoke.sh
+          GATEWAY_SCALING_GROUP_ID: ${{ vars.GATEWAY_SCALING_GROUP_ID }}
+        run: scripts/rolling-replace-gateways.sh
 
   production:
     needs: [build, staging]
@@ -111,11 +113,12 @@ jobs:
         env:
           STACK: ${{ vars.ROS_STACK_NAME }}
           GATEWAY_IMAGE: ${{ needs.build.outputs.gateway_image }}
-          CONTROL_GRPC_ADDR: ${{ vars.CONTROL_GRPC_ADDR }}
+          CONTROL_IMAGE: ${{ needs.build.outputs.control_image }}
         shell: bash
         run: |
-          cloud_init="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE" "$CONTROL_GRPC_ADDR" proxymesh/runtime)"
-          parameters="$(jq -nc --arg image "$GATEWAY_IMAGE" --arg userData "$cloud_init" '[{ParameterKey:"GatewayImage",ParameterValue:$image},{ParameterKey:"GatewayUserData",ParameterValue:$userData}]')"
+          gateway_user_data="$(scripts/render-cloud-init.sh "$GATEWAY_IMAGE")"
+          control_user_data="$(scripts/render-control-cloud-init.sh "$CONTROL_IMAGE")"
+          parameters="$(jq -nc --arg gatewayImage "$GATEWAY_IMAGE" --arg gatewayUserData "$gateway_user_data" --arg controlImage "$CONTROL_IMAGE" --arg controlUserData "$control_user_data" '[{ParameterKey:"GatewayImage",ParameterValue:$gatewayImage},{ParameterKey:"GatewayUserData",ParameterValue:$gatewayUserData},{ParameterKey:"ControlImage",ParameterValue:$controlImage},{ParameterKey:"ControlUserData",ParameterValue:$controlUserData}]')"
           name="release-${GITHUB_RUN_ID}-production"
           response="$(aliyun ros CreateChangeSet --RegionId "$REGION" --StackName "$STACK" --ChangeSetName "$name" --ChangeSetType UPDATE --Parameters "$parameters")"
           id="$(jq -r '.ChangeSetId' <<<"$response")"
@@ -126,8 +129,10 @@ jobs:
             [[ "$status" == *FAILED ]] && exit 1
             sleep 5
           done
+          test "$status" = CREATE_COMPLETE
           scripts/guard-change-set.sh change-set.json
           aliyun ros ExecuteChangeSet --RegionId "$REGION" --ChangeSetId "$id"
+          scripts/wait-ros-stack.sh "$STACK"
       - name: Add, ready, and drain one Gateway at a time
         env:
           GATEWAY_SCALING_GROUP_ID: ${{ vars.GATEWAY_SCALING_GROUP_ID }}

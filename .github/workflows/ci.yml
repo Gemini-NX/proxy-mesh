@@ -39,7 +39,14 @@ jobs:
         run: go build ./apps/control-plane ./apps/gateway
       - name: Validate Compose
         run: docker compose config --quiet
+      - name: Validate deployment files
+        run: |
+          bash -n scripts/*.sh tests/failover/*.sh tests/integration/*.sh
+          sh -n tests/integration/ss2022/run.sh
+          ruby -e 'require "yaml"; %w[infra/ros/main.yaml infra/cloud-init/gateway.yaml infra/cloud-init/control-plane.yaml].each { |f| YAML.load_file(f) }'
       - name: Build containers
         run: |
           docker build -f Dockerfile.control-plane -t proxymesh-control-plane:test .
           docker build -f Dockerfile.gateway -t proxymesh-gateway:test .
+      - name: Legacy to SS2022 migration E2E
+        run: tests/integration/ss2022/run.sh

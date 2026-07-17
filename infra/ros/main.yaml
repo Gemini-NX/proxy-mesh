@@ -1,6 +1,11 @@
 ROSTemplateFormatVersion: '2015-09-01'
 Description: ProxyMesh phase-one infrastructure in Alibaba Cloud Hong Kong.
 Parameters:
+  EnvironmentName:
+    Type: String
+    Default: staging
+    AllowedPattern: '^[a-z][a-z0-9-]{1,15}$'
+    Description: Short environment name used to isolate regional and global resource names.
   ZoneIdA:
     Type: String
     Description: First cn-hongkong availability zone.
@@ -15,12 +20,19 @@ Parameters:
   GatewayImage:
     Type: String
     Description: Immutable ACR image reference, preferably by digest.
+  ControlImage:
+    Type: String
+    Description: Immutable control-plane ACR image reference, preferably by digest.
   GatewayUserData:
     Type: String
-    Description: Rendered infra/cloud-init/gateway.yaml with all placeholders replaced.
-  ControlGRPCEndpoint:
+    Description: Rendered gateway cloud-init; ROS replaces the control endpoint marker.
+  ControlUserData:
     Type: String
-    Description: Private control-plane gRPC endpoint including port 9090.
+    Description: Rendered control-plane cloud-init; ROS replaces the RDS endpoint marker.
+  DeviceSourceCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: Public source CIDR allowed to reach device Shadowsocks ports.
   DevicePortStart:
     Type: Number
     Default: 50000
@@ -36,6 +48,11 @@ Parameters:
     Default: 4
     MinValue: 4
     MaxValue: 20
+  RequireCanary:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable only after the canary device and SOCKS5 route exist.
   DBInstanceClass:
     Type: String
     Default: pg.n2.2c.1m
@@ -43,13 +60,14 @@ Parameters:
     Type: String
     NoEcho: true
     MinLength: 16
-  RuntimeSecretData:
+  GatewayRuntimeSecretData:
     Type: String
     NoEcho: true
-    Description: JSON containing encryptionKey, canaryDeviceId and controlTLSServerName.
-  OOSServiceRoleArn:
+    Description: Gateway-only JSON containing snapshot key, canary and mTLS client material.
+  ControlRuntimeSecretData:
     Type: String
-    Description: Role assumed by ESS lifecycle OOS tasks.
+    NoEcho: true
+    Description: Control-only JSON containing encryption key, admin token and mTLS server material.
 Resources:
   VPC:
     Type: ALIYUN::ECS::VPC
@@ -82,7 +100,7 @@ Resources:
       SecurityGroupId: {Ref: GatewaySecurityGroup}
       IpProtocol: tcp
       PortRange: {'Fn::Join': ['', [{Ref: DevicePortStart}, '/', {Ref: DevicePortEnd}]]}
-      SourceCidrIp: 10.42.0.0/16
+      SourceCidrIp: {Ref: DeviceSourceCidr}
   GatewayHealthIngress:
     Type: ALIYUN::ECS::SecurityGroupIngress
     Properties:
@@ -90,16 +108,28 @@ Resources:
       IpProtocol: tcp
       PortRange: 18080/18080
       SourceCidrIp: 10.42.0.0/16
-  RuntimeSecret:
+  GatewayRuntimeSecret:
     Type: ALIYUN::KMS::Secret
     Properties:
-      SecretName: proxymesh/runtime
+      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/gateway-runtime'}
       VersionId: v1
-      SecretData: {Ref: RuntimeSecretData}
+      SecretData: {Ref: GatewayRuntimeSecretData}
+  ControlRuntimeSecret:
+    Type: ALIYUN::KMS::Secret
+    Properties:
+      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/control-runtime'}
+      VersionId: v1
+      SecretData: {Ref: ControlRuntimeSecretData}
+  DatabaseSecret:
+    Type: ALIYUN::KMS::Secret
+    Properties:
+      SecretName: {'Fn::Sub': 'proxymesh/${EnvironmentName}/database'}
+      VersionId: v1
+      SecretData: {'Fn::Join': ['', ['{"username":"proxymesh","password":"', {Ref: DBPassword}, '"}']]}
   GatewayRAMRole:
     Type: ALIYUN::RAM::Role
     Properties:
-      RoleName: proxymesh-gateway
+      RoleName: {'Fn::Sub': 'proxymesh-${EnvironmentName}-gateway'}
       AssumeRolePolicyDocument:
         Version: '1'
         Statement:
@@ -113,9 +143,50 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: ['kms:GetSecretValue']
-                Resource: {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/runtime'}
+                Resource: {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/gateway-runtime'}
               - Effect: Allow
                 Action: ['cr:GetAuthorizationToken']
+                Resource: '*'
+  ControlRAMRole:
+    Type: ALIYUN::RAM::Role
+    Properties:
+      RoleName: {'Fn::Sub': 'proxymesh-${EnvironmentName}-control'}
+      AssumeRolePolicyDocument:
+        Version: '1'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: [ecs.aliyuncs.com]}
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: proxymesh-control-runtime
+          PolicyDocument:
+            Version: '1'
+            Statement:
+              - Effect: Allow
+                Action: ['kms:GetSecretValue']
+                Resource:
+                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/control-runtime'}
+                  - {'Fn::Sub': 'acs:kms:${ALIYUN::Region}:${ALIYUN::TenantId}:secret/proxymesh/${EnvironmentName}/database'}
+              - Effect: Allow
+                Action: ['cr:GetAuthorizationToken']
+                Resource: '*'
+  OOSLifecycleRole:
+    Type: ALIYUN::RAM::Role
+    Properties:
+      RoleName: {'Fn::Sub': 'proxymesh-${EnvironmentName}-oos'}
+      AssumeRolePolicyDocument:
+        Version: '1'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: [oos.aliyuncs.com]}
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: proxymesh-oos-lifecycle
+          PolicyDocument:
+            Version: '1'
+            Statement:
+              - Effect: Allow
+                Action: ['ecs:DescribeInvocationResults', 'ecs:DescribeInvocations', 'ecs:RunCommand', 'ess:CompleteLifecycleAction']
                 Resource: '*'
   EIP:
     Type: ALIYUN::VPC::EIP
@@ -192,9 +263,9 @@ Resources:
       LoadBalancerId: {Ref: NLB}
       ServerGroupId: {Ref: NLBServerGroup}
       ListenerProtocol: TCP
-      ListenerPort: {Ref: DevicePortStart}
-      StartPort: {Ref: DevicePortStart}
-      EndPort: {Ref: DevicePortEnd}
+      ListenerPort: 1
+      StartPort: 1
+      EndPort: 65535
       IdleTimeout: 60
       Enable: true
   GatewayScalingGroup:
@@ -220,7 +291,14 @@ Resources:
       InternetMaxBandwidthOut: 0
       SystemDiskCategory: cloud_essd
       SystemDiskSize: 40
-      UserData: {Ref: GatewayUserData}
+      UserData:
+        Fn::Replace:
+          - __CONTROL_GRPC_ADDR__:
+              Fn::Join: ['', [{'Fn::GetAtt': [ControlNLB, DNSName]}, ':9090']]
+            __REQUIRE_CANARY__: {Ref: RequireCanary}
+            __KMS_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/gateway-runtime'}
+            __GATEWAY_RAM_ROLE_NAME__: {'Fn::GetAtt': [GatewayRAMRole, RoleName]}
+          - {Ref: GatewayUserData}
   GatewayServerGroupAttachment:
     Type: ALIYUN::ESS::ServerGroupAttachment
     Properties:
@@ -238,8 +316,8 @@ Resources:
       LifecycleTransition: SCALE_OUT
       HeartbeatTimeout: 600
       DefaultResult: ABANDON
-      NotificationArn: {'Fn::Sub': '${OOSServiceRoleArn}:oos/ACS-ESS-LifeCycleRunCommand'}
-      NotificationMetadata: '{"commandContent":"/opt/proxymesh/bin/lifecycle-scale-out.sh","commandType":"RunShellScript"}'
+      NotificationArn: {'Fn::Sub': 'acs:ess:${ALIYUN::Region}:${ALIYUN::TenantId}:oos/ACS-ESS-LifeCycleRunCommand'}
+      NotificationMetadata: {'Fn::Sub': '{"commandContent":"i=0; until [ -x /opt/proxymesh/bin/lifecycle-scale-out.sh ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1; sleep 5; done; exec /opt/proxymesh/bin/lifecycle-scale-out.sh","commandType":"RunShellScript","timeout":600,"lifecycleActionResult":"ABANDON","OOSAssumeRole":"${OOSLifecycleRole.RoleName}"}'}
   ScaleInLifecycleHook:
     Type: ALIYUN::ESS::LifecycleHook
     Properties:
@@ -248,11 +326,11 @@ Resources:
       LifecycleTransition: SCALE_IN
       HeartbeatTimeout: 600
       DefaultResult: CONTINUE
-      NotificationArn: {'Fn::Sub': '${OOSServiceRoleArn}:oos/ACS-ESS-LifeCycleRunCommand'}
-      NotificationMetadata: '{"commandContent":"/opt/proxymesh/bin/lifecycle-scale-in.sh","commandType":"RunShellScript"}'
+      NotificationArn: {'Fn::Sub': 'acs:ess:${ALIYUN::Region}:${ALIYUN::TenantId}:oos/ACS-ESS-LifeCycleRunCommand'}
+      NotificationMetadata: {'Fn::Sub': '{"commandContent":"i=0; until [ -x /opt/proxymesh/bin/lifecycle-scale-in.sh ]; do i=$((i+1)); [ $i -lt 60 ] || exit 1; sleep 5; done; exec /opt/proxymesh/bin/lifecycle-scale-in.sh","commandType":"RunShellScript","timeout":600,"lifecycleActionResult":"CONTINUE","OOSAssumeRole":"${OOSLifecycleRole.RoleName}"}'}
   GatewayScalingGroupEnable:
     Type: ALIYUN::ESS::ScalingGroupEnable
-    DependsOn: [GatewayScalingConfiguration, GatewayServerGroupAttachment, ScaleOutLifecycleHook, ScaleInLifecycleHook]
+    DependsOn: [GatewayScalingConfiguration, GatewayServerGroupAttachment, ScaleOutLifecycleHook, ScaleInLifecycleHook, GatewayRuntimeSecret, SNATEntryA, SNATEntryB]
     Properties:
       ScalingGroupId: {Ref: GatewayScalingGroup}
       ScalingConfigurationId: {Ref: GatewayScalingConfiguration}
@@ -282,7 +360,158 @@ Resources:
       SecurityIPList: 10.42.0.0/16
       MasterUsername: proxymesh
       MasterUserPassword: {Ref: DBPassword}
+      DBMappings:
+        - DBName: proxymesh
+          CharacterSetName: UTF8
       DBInstanceDescription: ProxyMesh PostgreSQL
+  ControlSecurityGroup:
+    Type: ALIYUN::ECS::SecurityGroup
+    Properties:
+      VpcId: {Ref: VPC}
+      SecurityGroupName: proxymesh-control-plane
+      SecurityGroupType: enterprise
+  ControlAPIIngress:
+    Type: ALIYUN::ECS::SecurityGroupIngress
+    Properties:
+      SecurityGroupId: {Ref: ControlSecurityGroup}
+      IpProtocol: tcp
+      PortRange: 8080/8080
+      SourceCidrIp: 10.42.0.0/16
+  ControlGRPCIngress:
+    Type: ALIYUN::ECS::SecurityGroupIngress
+    Properties:
+      SecurityGroupId: {Ref: ControlSecurityGroup}
+      IpProtocol: tcp
+      PortRange: 9090/9090
+      SourceCidrIp: 10.42.0.0/16
+  ControlInstance:
+    Type: ALIYUN::ECS::Instance
+    DependsOn: [PostgreSQL, ControlRuntimeSecret, DatabaseSecret, SNATEntryA]
+    Properties:
+      InstanceName: proxymesh-control-plane
+      ImageId: {Ref: ECSImageId}
+      InstanceType: {Ref: ECSInstanceType}
+      VpcId: {Ref: VPC}
+      VSwitchId: {Ref: VSwitchA}
+      SecurityGroupId: {Ref: ControlSecurityGroup}
+      RamRoleName: {'Fn::GetAtt': [ControlRAMRole, RoleName]}
+      InternetMaxBandwidthOut: 0
+      SystemDiskCategory: cloud_essd
+      SystemDiskSize: 40
+      UserData:
+        Fn::Replace:
+          - __DATABASE_HOST__: {'Fn::GetAtt': [PostgreSQL, InnerConnectionString]}
+            __DATABASE_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/database'}
+            __RUNTIME_SECRET_NAME__: {'Fn::Sub': 'proxymesh/${EnvironmentName}/control-runtime'}
+            __CONTROL_RAM_ROLE_NAME__: {'Fn::GetAtt': [ControlRAMRole, RoleName]}
+          - {Ref: ControlUserData}
+  ControlNLB:
+    Type: ALIYUN::NLB::LoadBalancer
+    Properties:
+      VpcId: {Ref: VPC}
+      LoadBalancerName: proxymesh-control
+      AddressType: Intranet
+      AddressIpVersion: Ipv4
+      CrossZoneEnabled: true
+      DeletionProtectionEnabled: true
+      ZoneMappings:
+        - ZoneId: {Ref: ZoneIdA}
+          VSwitchId: {Ref: VSwitchA}
+        - ZoneId: {Ref: ZoneIdB}
+          VSwitchId: {Ref: VSwitchB}
+  ControlAPIServerGroup:
+    Type: ALIYUN::NLB::ServerGroup
+    Properties:
+      VpcId: {Ref: VPC}
+      ServerGroupName: proxymesh-control-api
+      Protocol: TCP
+      HealthCheckConfig:
+        HealthCheckEnabled: true
+        HealthCheckType: Http
+        HealthCheckConnectPort: 8080
+        HealthCheckUrl: /live
+        HttpCheckMethod: GET
+        HealthCheckHttpCode: [http_2xx]
+  ControlGRPCServerGroup:
+    Type: ALIYUN::NLB::ServerGroup
+    Properties:
+      VpcId: {Ref: VPC}
+      ServerGroupName: proxymesh-control-grpc
+      Protocol: TCP
+      HealthCheckConfig:
+        HealthCheckEnabled: true
+        HealthCheckType: Http
+        HealthCheckConnectPort: 8080
+        HealthCheckUrl: /live
+        HttpCheckMethod: GET
+        HealthCheckHttpCode: [http_2xx]
+  ControlAPIBackend:
+    Type: ALIYUN::NLB::BackendServerAttachment
+    Properties:
+      ServerGroupId: {Ref: ControlAPIServerGroup}
+      Servers:
+        - ServerType: Ecs
+          ServerId: {Ref: ControlInstance}
+          Port: 8080
+          Weight: 100
+  ControlGRPCBackend:
+    Type: ALIYUN::NLB::BackendServerAttachment
+    Properties:
+      ServerGroupId: {Ref: ControlGRPCServerGroup}
+      Servers:
+        - ServerType: Ecs
+          ServerId: {Ref: ControlInstance}
+          Port: 9090
+          Weight: 100
+  ControlAPIListener:
+    Type: ALIYUN::NLB::Listener
+    Properties:
+      LoadBalancerId: {Ref: ControlNLB}
+      ServerGroupId: {Ref: ControlAPIServerGroup}
+      ListenerProtocol: TCP
+      ListenerPort: 8080
+      IdleTimeout: 60
+  ControlGRPCListener:
+    Type: ALIYUN::NLB::Listener
+    Properties:
+      LoadBalancerId: {Ref: ControlNLB}
+      ServerGroupId: {Ref: ControlGRPCServerGroup}
+      ListenerProtocol: TCP
+      ListenerPort: 9090
+      IdleTimeout: 60
+  ControlImageDeploy:
+    Type: ALIYUN::ECS::RunCommand
+    DependsOn: [ControlInstance, ControlAPIBackend, ControlGRPCBackend]
+    Properties:
+      InstanceIds: [{Ref: ControlInstance}]
+      Type: RunShellScript
+      ContentEncoding: PlainText
+      Sync: true
+      Timeout: 900
+      CommandContent:
+        Fn::Join:
+          - ''
+          - - |-
+              #!/usr/bin/env sh
+              set -eu
+              i=0
+              until [ -x /opt/proxymesh/bin/start-control-plane.sh ]; do
+                i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5
+              done
+              sed -i 's|^IMAGE=.*|IMAGE=
+            - {Ref: ControlImage}
+            - |-
+              |' /etc/proxymesh/control-bootstrap.env
+              systemctl restart proxymesh-control-plane
+              i=0
+              until curl -fsS http://127.0.0.1:8080/live >/dev/null; do
+                i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5
+              done
+              ADMIN_TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' /run/proxymesh/control.env)"
+              i=0
+              until curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8080/v1/gateways | jq -e 'length >= 3' >/dev/null; do
+                i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5
+              done
   LogProject:
     Type: ALIYUN::SLS::Project
     Properties:
@@ -309,3 +538,9 @@ Outputs:
     Value: {Ref: GatewayScalingGroup}
   PostgreSQLEndpoint:
     Value: {'Fn::GetAtt': [PostgreSQL, InnerConnectionString]}
+  ControlInstanceId:
+    Value: {Ref: ControlInstance}
+  ControlAPIDNSName:
+    Value: {'Fn::GetAtt': [ControlNLB, DNSName]}
+  ControlGRPCEndpoint:
+    Value: {'Fn::Join': ['', [{'Fn::GetAtt': [ControlNLB, DNSName]}, ':9090']]}

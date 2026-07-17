@@ -1,0 +1,77 @@
+#cloud-config
+package_update: true
+packages:
+  - docker
+  - curl
+  - jq
+write_files:
+  - path: /etc/proxymesh/control-bootstrap.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      IMAGE=__CONTROL_IMAGE__
+      DATABASE_HOST=__DATABASE_HOST__
+      DATABASE_SECRET_NAME=__DATABASE_SECRET_NAME__
+      RUNTIME_SECRET_NAME=__RUNTIME_SECRET_NAME__
+      RAM_ROLE_NAME=__CONTROL_RAM_ROLE_NAME__
+  - path: /opt/proxymesh/bin/start-control-plane.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env sh
+      set -eu
+      . /etc/proxymesh/control-bootstrap.env
+      aliyun configure set --profile default --mode EcsRamRole --ram-role-name "$RAM_ROLE_NAME" --region cn-hongkong >/dev/null
+      install -d -m 0700 /run/proxymesh
+      runtime="$(aliyun kms GetSecretValue --SecretName "$RUNTIME_SECRET_NAME" | jq -r '.SecretData')"
+      database="$(aliyun kms GetSecretValue --SecretName "$DATABASE_SECRET_NAME" | jq -r '.SecretData')"
+      password="$(printf '%s' "$database" | jq -r '.password | @uri')"
+      umask 077
+      printf '%s' "$runtime" | jq -r '
+        "ENCRYPTION_KEY=" + .encryptionKey,
+        "ADMIN_TOKEN=" + .adminToken,
+        "PUBLIC_PROXY_HOST=" + .publicProxyHost
+      ' > /run/proxymesh/control.env
+      printf '%s\n' "DATABASE_URL=postgres://proxymesh:${password}@${DATABASE_HOST}:5432/proxymesh?sslmode=require" >> /run/proxymesh/control.env
+      printf '%s' "$runtime" | jq -r '.controlServerCert' > /run/proxymesh/control-server.pem
+      printf '%s' "$runtime" | jq -r '.controlServerKey' > /run/proxymesh/control-server-key.pem
+      printf '%s' "$runtime" | jq -r '.gatewayClientCA' > /run/proxymesh/gateway-client-ca.pem
+      chown -R 65532:65532 /run/proxymesh
+      unset runtime database password
+      acr="$(aliyun cr GetAuthorizationToken --RegionId cn-hongkong)"
+      acr_user="$(printf '%s' "$acr" | jq -r '.TempUsername')"
+      acr_password="$(printf '%s' "$acr" | jq -r '.AuthorizationToken')"
+      registry="$(printf '%s' "$IMAGE" | cut -d/ -f1)"
+      printf '%s' "$acr_password" | docker login "$registry" --username "$acr_user" --password-stdin
+      unset acr acr_password
+      docker pull "$IMAGE"
+      docker rm -f proxymesh-control-plane 2>/dev/null || true
+      exec docker run --name proxymesh-control-plane --network host \
+        --env-file /run/proxymesh/control.env \
+        -e AUTO_MIGRATE=true -e HTTP_ADDR=:8080 -e GRPC_ADDR=:9090 \
+        -e GRPC_TLS_CERT=/run/proxymesh/control-server.pem \
+        -e GRPC_TLS_KEY=/run/proxymesh/control-server-key.pem \
+        -e GRPC_CLIENT_CA=/run/proxymesh/gateway-client-ca.pem \
+        -v /run/proxymesh:/run/proxymesh:ro \
+        "$IMAGE"
+  - path: /etc/systemd/system/proxymesh-control-plane.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=ProxyMesh Control Plane container
+      After=docker.service network-online.target
+      Wants=docker.service network-online.target
+      [Service]
+      Type=simple
+      ExecStart=/opt/proxymesh/bin/start-control-plane.sh
+      Restart=on-failure
+      RestartSec=5
+      TimeoutStopSec=30
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - /bin/bash -c "curl -fsSL https://aliyuncli.alicdn.com/install.sh | /bin/bash"
+  - systemctl enable --now docker
+  - systemctl daemon-reload
+  - systemctl enable --now proxymesh-control-plane

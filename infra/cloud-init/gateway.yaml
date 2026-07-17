@@ -2,7 +2,6 @@
 package_update: true
 packages:
   - docker
-  - aliyun-cli
   - curl
   - jq
 write_files:
@@ -13,6 +12,8 @@ write_files:
       IMAGE=__GATEWAY_IMAGE__
       CONTROL_GRPC_ADDR=__CONTROL_GRPC_ADDR__
       KMS_SECRET_NAME=__KMS_SECRET_NAME__
+      RAM_ROLE_NAME=__GATEWAY_RAM_ROLE_NAME__
+      REQUIRE_CANARY=__REQUIRE_CANARY__
   - path: /opt/proxymesh/bin/start-gateway.sh
     owner: root:root
     permissions: "0750"
@@ -20,6 +21,7 @@ write_files:
       #!/usr/bin/env sh
       set -eu
       . /etc/proxymesh/bootstrap.env
+      aliyun configure set --profile default --mode EcsRamRole --ram-role-name "$RAM_ROLE_NAME" --region cn-hongkong >/dev/null
       install -d -m 0700 /run/proxymesh
       install -d -o 65532 -g 65532 -m 0700 /var/lib/proxymesh
       SECRET_DATA="$(aliyun kms GetSecretValue --SecretName "$KMS_SECRET_NAME" | jq -r '.SecretData')"
@@ -30,13 +32,13 @@ write_files:
         "CONTROL_TLS_SERVER_NAME=" + (.controlTLSServerName // "")
       ' > /run/proxymesh/gateway.env
       if printf '%s' "$SECRET_DATA" | jq -e '
-        (.controlCA // "") != "" and
-        (.controlCert // "") != "" and
-        (.controlKey // "") != ""
+        (.controlServerCA // "") != "" and
+        (.gatewayClientCert // "") != "" and
+        (.gatewayClientKey // "") != ""
       ' >/dev/null; then
-        printf '%s' "$SECRET_DATA" | jq -r '.controlCA' > /run/proxymesh/control-ca.pem
-        printf '%s' "$SECRET_DATA" | jq -r '.controlCert' > /run/proxymesh/control-cert.pem
-        printf '%s' "$SECRET_DATA" | jq -r '.controlKey' > /run/proxymesh/control-key.pem
+        printf '%s' "$SECRET_DATA" | jq -r '.controlServerCA' > /run/proxymesh/control-ca.pem
+        printf '%s' "$SECRET_DATA" | jq -r '.gatewayClientCert' > /run/proxymesh/control-cert.pem
+        printf '%s' "$SECRET_DATA" | jq -r '.gatewayClientKey' > /run/proxymesh/control-key.pem
         chown 65532:65532 /run/proxymesh/control-ca.pem /run/proxymesh/control-cert.pem /run/proxymesh/control-key.pem
         printf '%s\n' \
           'CONTROL_TLS_CA=/run/proxymesh/control-ca.pem' \
@@ -60,7 +62,7 @@ write_files:
         -e GATEWAY_ADDRESS="$(hostname -I | awk '{print $1}')" \
         -e SNAPSHOT_PATH=/var/lib/proxymesh/routes.snapshot \
         -e SHADOWSOCKS_LISTEN_HOST=0.0.0.0 -e HEALTH_ADDR=:18080 \
-        -e REQUIRE_CANARY=true \
+        -e REQUIRE_CANARY="$REQUIRE_CANARY" \
         -v /run/proxymesh:/run/proxymesh:ro \
         -v /var/lib/proxymesh:/var/lib/proxymesh \
         "$IMAGE"
@@ -110,6 +112,7 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
+  - /bin/bash -c "curl -fsSL https://aliyuncli.alicdn.com/install.sh | /bin/bash"
   - systemctl enable --now docker
   - systemctl daemon-reload
   - systemctl enable --now proxymesh-gateway

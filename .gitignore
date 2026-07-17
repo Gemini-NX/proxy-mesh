@@ -7,4 +7,5 @@ coverage.out
 *.test
 *.log
 data/
+secrets/
 .DS_Store
