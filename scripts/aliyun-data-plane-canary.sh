@@ -59,7 +59,8 @@ resolve_stack_id() {
     --Status.1 CREATE_COMPLETE \
     --Status.2 UPDATE_COMPLETE \
     --Status.3 CREATE_IN_PROGRESS \
-    --Status.4 UPDATE_IN_PROGRESS |
+    --Status.4 UPDATE_IN_PROGRESS \
+    --Status.5 ROLLBACK_COMPLETE |
     jq -er --arg name "$stack_ref" '
       [.Stacks[] | select(.StackName == $name)] |
       sort_by(.CreateTime) |

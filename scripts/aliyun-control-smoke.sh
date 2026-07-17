@@ -42,7 +42,8 @@ resolve_stack_id() {
     --Status.1 CREATE_COMPLETE \
     --Status.2 UPDATE_COMPLETE \
     --Status.3 CREATE_IN_PROGRESS \
-    --Status.4 UPDATE_IN_PROGRESS |
+    --Status.4 UPDATE_IN_PROGRESS \
+    --Status.5 ROLLBACK_COMPLETE |
     jq -er --arg name "$stack_ref" '
       [.Stacks[] | select(.StackName == $name)] |
       sort_by(.CreateTime) |
@@ -59,7 +60,10 @@ fi
 
 remote_command="$(cat <<'REMOTE'
 set -eu
-token="$(sed -n 's/^ADMIN_TOKEN=//p' /run/proxymesh/control.env)"
+token="$(docker inspect proxymesh-control-plane 2>/dev/null | jq -r '.[0].Config.Env[] | select(startswith("ADMIN_TOKEN=")) | sub("^ADMIN_TOKEN=";"")' | tail -n 1)"
+if [ -z "$token" ]; then
+  token="$(sed -n 's/^ADMIN_TOKEN=//p' /run/proxymesh/control.env)"
+fi
 test -n "$token"
 curl -fsS http://127.0.0.1:8080/live >/dev/null
 gateways="$(curl -fsS -H "Authorization: Bearer $token" http://127.0.0.1:8080/v1/gateways)"

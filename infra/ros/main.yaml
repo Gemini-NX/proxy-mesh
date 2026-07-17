@@ -545,7 +545,10 @@ Resources:
               until curl -fsS http://127.0.0.1:8080/live >/dev/null; do
                 i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5
               done
-              ADMIN_TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' /run/proxymesh/control.env)"
+              ADMIN_TOKEN="$(docker inspect proxymesh-control-plane 2>/dev/null | jq -r '.[0].Config.Env[] | select(startswith("ADMIN_TOKEN=")) | sub("^ADMIN_TOKEN=";"")' | tail -n 1)"
+              if [ -z "$ADMIN_TOKEN" ]; then
+                ADMIN_TOKEN="$(sed -n 's/^ADMIN_TOKEN=//p' /run/proxymesh/control.env)"
+              fi
               i=0
               until curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8080/v1/gateways | jq -e --argjson expected "$EXPECTED_GATEWAYS" 'length >= $expected' >/dev/null; do
                 i=$((i + 1)); [ "$i" -lt 120 ] || exit 1; sleep 5

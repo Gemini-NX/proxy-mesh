@@ -38,7 +38,7 @@ for _ in {1..180}; do
   status="$(jq -r '.Status' <<<"$response")"
   case "$status" in
     CREATE_COMPLETE|UPDATE_COMPLETE) exit 0 ;;
-    *_FAILED|*_ROLLBACK_*|DELETE_*)
+    *_FAILED|*_ROLLBACK_*|ROLLBACK_*|DELETE_*)
       echo "ROS stack $stack_id entered $status" >&2
       exit 1
       ;;
